@@ -1,0 +1,240 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  TECHNICIAN
+  BILLING
+}
+
+enum CustomerStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DISCONNECTED
+}
+
+enum FiberNodeType {
+  OLT
+  TJ_BOX
+  SPLITTER
+}
+
+enum PaymentMethod {
+  CASH
+  BKASH
+  NAGAD
+  ROCKET
+  BANK
+  OTHER
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  phone        String?
+  role         Role      @default(BILLING)
+  passwordHash String
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  customersCreated Customer[] @relation("CustomerCreatedBy")
+  payments         Payment[]  @relation("PaymentCollectedBy")
+}
+
+model Customer {
+  id           String         @id @default(cuid())
+  /// Human-friendly ID, e.g. C-000123 (generated from `seq`).
+  customerCode String         @unique
+  seq          Int            @unique @default(autoincrement())
+
+  // Basic
+  name     String
+  phone    String
+  altPhone String?
+  email    String?
+  nid      String?
+  address  String
+  area     String?
+  status   CustomerStatus @default(ACTIVE)
+
+  // Service & billing (package is free text per customer)
+  packageSpeed   String
+  monthlyFee     Decimal   @default(0) @db.Decimal(12, 2)
+  connectionDate DateTime? @db.Date
+  /// Next bill due date.
+  billingDate    DateTime? @db.Date
+  /// Service valid until (inclusive).
+  expireDate     DateTime? @db.Date
+
+  // RADIUS / ONU
+  /// Numeric customer ID in the RADIUS/billing system (e.g. 24545).
+  radiusId      Int?    @unique
+  pppoeUsername String? @unique
+  onuSerial     String? @unique
+  onuModel      String?
+  /// PON number on the OLT the ONU hangs off.
+  ponId         Int?
+
+  // Fiber: OLT & PON
+  oltName String?
+  ponPort String?
+  onuId   Int?
+
+  // Fiber: splitter & box
+  splitterName  String?
+  splitterRatio String?
+  splitterPort  Int?
+  boxName       String?
+
+  // Fiber: cable & core
+  cableId    String?
+  coreNumber Int?
+  coreColor  String?
+  tubeColor  String?
+
+  // Fiber: signal & distance
+  rxPower     Float? /// dBm
+  txPower     Float? /// dBm
+  cableLength Int? /// meters
+
+  // Location
+  latitude  Float?
+  longitude Float?
+
+  notes String?
+
+  /// Splitter this customer's drop hangs off (port = `splitterPort`). Set from the fiber builder;
+  /// the denormalised fiber fields above are then kept in sync by services/network.ts.
+  fiberNodeId String?
+  fiberNode   FiberNode? @relation(fields: [fiberNodeId], references: [id], onDelete: SetNull)
+
+  createdById String?
+  createdBy   User?     @relation("CustomerCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  payments    Payment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([expireDate])
+  @@index([area])
+  @@index([phone])
+  @@index([name])
+  @@unique([fiberNodeId, splitterPort])
+}
+
+/// A device in the passive optical network: OLT, joint/TJ box, or splitter.
+model FiberNode {
+  id   String        @id @default(cuid())
+  type FiberNodeType
+  name String
+
+  latitude  Float?
+  longitude Float?
+  address   String?
+
+  // OLT
+  ipAddress String?
+  model     String?
+  /// Number of PON ports on the OLT.
+  ponPorts  Int?
+  /// PON label prefix, e.g. "0/1/" → ports "0/1/1" … "0/1/N".
+  ponPrefix String?
+
+  // TJ box
+  /// Splice positions on a TJ box: core in on position N continues out on port N.
+  cablePorts Int?
+
+  // Splitter
+  splitterRatio String?
+  /// TJ box the splitter is installed in.
+  boxId         String?
+  box           FiberNode?  @relation("BoxSplitters", fields: [boxId], references: [id], onDelete: SetNull)
+  splitters     FiberNode[] @relation("BoxSplitters")
+
+  notes String?
+
+  /// Position on the schematic canvas.
+  posX Float @default(0)
+  posY Float @default(0)
+
+  linksOut  FiberLink[] @relation("LinkFrom")
+  linksIn   FiberLink[] @relation("LinkTo")
+  customers Customer[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([type, name])
+}
+
+/// One fiber core running from a port on one node to another node.
+/// Cores sharing `cableCode` between the same two nodes are one physical multi-core cable.
+model FiberLink {
+  id         String    @id @default(cuid())
+  fromNodeId String
+  fromNode   FiberNode @relation("LinkFrom", fields: [fromNodeId], references: [id], onDelete: Cascade)
+  /// OLT: PON port number; splitter: output port number; TJ box: cable out port number.
+  fromPort   Int?
+  toNodeId   String
+  toNode     FiberNode @relation("LinkTo", fields: [toNodeId], references: [id], onDelete: Cascade)
+  /// TJ box only: splice position the core lands on. Core in on position N continues out on "Out N".
+  toPort     Int?
+
+  cableCode  String?
+  /// Total cores in the physical cable (2, 4, 6, 12, 24…).
+  coreCount  Int?
+  tubeColor  String?
+  coreNumber Int?
+  coreColor  String?
+  /// Meters.
+  length     Int?
+  /// Meter mark printed on the cable sheath where it leaves `fromNode` (start) and enters `toNode` (end).
+  /// One cable ID can feed several outputs of a TJ box, so the marks tell its segments apart.
+  startMark  Int?
+  endMark    Int?
+  /// Route on the map: [[lat, lng], …] intermediate waypoints (endpoints come from the nodes).
+  path       Json?
+  notes      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([fromNodeId, fromPort])
+  @@unique([toNodeId, toPort])
+  @@index([toNodeId])
+}
+
+model Payment {
+  id            String        @id @default(cuid())
+  receiptNo     String        @unique
+  seq           Int           @unique @default(autoincrement())
+  customerId    String
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  amount        Decimal       @db.Decimal(12, 2)
+  method        PaymentMethod @default(CASH)
+  transactionId String?
+  /// Months of service this payment renewed (0 = no renewal).
+  months        Int           @default(1)
+  periodFrom    DateTime?     @db.Date
+  periodTo      DateTime?     @db.Date
+  paidAt        DateTime      @default(now())
+  note          String?
+  collectedById String?
+  collectedBy   User?         @relation("PaymentCollectedBy", fields: [collectedById], references: [id], onDelete: SetNull)
+  createdAt     DateTime      @default(now())
+
+  @@index([customerId])
+  @@index([paidAt])
+}

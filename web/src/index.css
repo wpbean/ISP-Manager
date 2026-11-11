@@ -1,0 +1,250 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-sans/700.css';
+@import 'leaflet/dist/leaflet.css';
+
+/*
+ * Design tokens — see /design.md. Dark is the default canvas; light flips only
+ * canvas / surface / text tones. Primary yellow + up/down semantics are shared.
+ */
+:root,
+[data-theme='dark'] {
+  --canvas: #0b0e11;
+  --surface: #1e2329;
+  --surface-2: #2b3139;
+  --surface-3: #363c45;
+  --hairline: #2b3139;
+  --text: #eaecef;
+  --text-strong: #ffffff;
+  --muted: #707a8a;
+  --muted-strong: #929aa5;
+  --input-bg: #1e2329;
+  --primary-disabled: #3a3a1f;
+  --chart-bar: #b88c00; /* validated vs #1e2329 (dataviz lightness band + 3:1) */
+  --chart-grid: #2b3139;
+  --warn: #FCD535;
+  --accent-text: #fcd535; /* yellow text: 11:1 on #1e2329 */
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --canvas: #f5f5f5;
+  --surface: #ffffff;
+  --surface-2: #fafafa;
+  --surface-3: #eaecef;
+  --hairline: #eaecef;
+  --text: #181a20;
+  --text-strong: #181a20;
+  --muted: #707a8a;
+  --muted-strong: #474d57;
+  --input-bg: #ffffff;
+  --primary-disabled: #f5ecc2;
+  --chart-bar: #946c00; /* validated vs #ffffff */
+  --chart-grid: #eaecef;
+  --warn: #946c00; /* 4.77:1 on white */
+  --accent-text: #8a6400; /* yellow-family text on light: 5.4:1 on white */
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-hairline: var(--hairline);
+  --color-text: var(--text);
+  --color-strong: var(--text-strong);
+  --color-muted: var(--muted);
+  --color-muted-strong: var(--muted-strong);
+  --color-input: var(--input-bg);
+  --color-warn: var(--warn);
+  --color-accent: var(--accent-text);
+  --color-primary-disabled: var(--primary-disabled);
+}
+
+@theme {
+  --color-primary: #fcd535;
+  --color-primary-active: #f0b90b;
+  --color-on-primary: #181a20;
+  --color-up: #0ecb81;
+  --color-down: #f6465d;
+  --color-info: #3b82f6;
+
+  --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-num: 'IBM Plex Sans', 'Inter Variable', -apple-system, sans-serif;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--canvas);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: #fcd535;
+    color: #181a20;
+  }
+  :focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgb(59 130 246 / 0.5);
+  }
+}
+
+@layer components {
+  /* Numbers always use the tabular "Plex" voice (design.md: BinancePlex substitute). */
+  .num {
+    font-family: var(--font-num);
+    font-variant-numeric: tabular-nums;
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--surface-3) transparent;
+  }
+}
+
+/* Leaflet tweaks to sit inside the design system */
+[data-theme='dark'] .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9) saturate(0.6);
+}
+.leaflet-container {
+  background: var(--surface-2);
+  font-family: var(--font-sans);
+  border-radius: inherit;
+}
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+}
+.leaflet-popup-content-wrapper {
+  border-radius: 8px;
+}
+.leaflet-popup-content {
+  margin: 12px 14px;
+}
+.leaflet-container a.leaflet-popup-close-button {
+  color: var(--muted);
+}
+.leaflet-bar a {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--hairline);
+}
+.leaflet-control-attribution {
+  background: color-mix(in srgb, var(--surface) 80%, transparent) !important;
+  color: var(--muted) !important;
+}
+.leaflet-control-attribution a {
+  color: var(--muted-strong) !important;
+}
+
+/* ---- Fiber builder --------------------------------------------------------- */
+/* React Flow chrome on design tokens (custom nodes style themselves). */
+.fiber-flow {
+  --xy-background-color: var(--canvas);
+  --xy-controls-button-background-color: var(--surface);
+  --xy-controls-button-background-color-hover: var(--surface-2);
+  --xy-controls-button-color: var(--text);
+  --xy-controls-button-color-hover: var(--text-strong);
+  --xy-controls-button-border-color: var(--hairline);
+  --xy-controls-box-shadow: none;
+  --xy-minimap-background-color: var(--surface);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--canvas) 60%, transparent);
+  --xy-node-boxshadow-selected: none;
+  --xy-handle-background-color: var(--muted-strong);
+  --xy-edge-stroke: var(--muted-strong);
+  --xy-connectionline-stroke: #fcd535;
+}
+.fiber-flow .react-flow__controls,
+.fiber-flow .react-flow__minimap {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.fiber-flow .react-flow__node {
+  /* custom nodes draw their own card */
+  border: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.fiber-flow .react-flow__handle.connectingto,
+.fiber-flow .react-flow__handle:hover {
+  outline: 2px solid #fcd535;
+  outline-offset: 1px;
+}
+
+/* Touch screens: a bigger invisible hit area around each port handle (the dot stays small). */
+@media (pointer: coarse) {
+  .fiber-flow .react-flow__handle::after {
+    content: '';
+    position: absolute;
+    inset: -7px; /* 24px target = one port row */
+    border-radius: 9999px;
+  }
+  .fiber-flow .react-flow__controls-button {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* Map pins (Leaflet divIcon) */
+.fiber-pin {
+  display: flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  font: 700 10px/1 var(--font-num);
+  letter-spacing: 0.02em;
+  border: 2px solid var(--surface);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
+}
+.fiber-pin--olt {
+  background: #fcd535;
+  color: #181a20;
+  border-radius: 6px;
+}
+.fiber-pin--tj_box {
+  background: var(--surface-2);
+  color: var(--accent-text);
+  border-color: #fcd535;
+  border-radius: 6px;
+}
+.fiber-pin--splitter {
+  background: var(--surface);
+  color: var(--text-strong);
+  border-color: var(--muted-strong);
+  border-radius: 9999px;
+}
+.fiber-pin--sel {
+  outline: 3px solid #fcd535;
+  outline-offset: 2px;
+}
+.fiber-map-picking .leaflet-container {
+  cursor: crosshair;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
