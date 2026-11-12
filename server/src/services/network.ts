@@ -3,9 +3,11 @@ import {
   CABLE_SHARED_FIELDS,
   DEFAULT_BOX_PORTS,
   fiberColorFor,
+  markLength,
   ponLabel,
   splitterOutputs,
   type FiberCustomer,
+  type FiberInsertBoxData,
   type FiberLink,
   type FiberLinkInput,
   type FiberNetwork,
@@ -281,4 +283,173 @@ export async function resyncCustomers() {
     if (changed) updates.push(tx.customer.update({ where: { id: c.id }, data: next }));
   }
   if (updates.length) await prisma.$transaction(updates);
+}
+
+// ---- Insert a TJ box into an existing cable ---------------------------------
+type LatLng = [number, number];
+
+function nodeLatLng(n: DbNode | null | undefined, byId: Map<string, DbNode>): LatLng | null {
+  if (!n) return null;
+  const at = n.type === 'SPLITTER' && n.boxId ? byId.get(n.boxId) : n;
+  return at?.latitude != null && at.longitude != null ? [at.latitude, at.longitude] : null;
+}
+
+/**
+ * Split a cable's map waypoints where the box sits: waypoints before the closest route segment
+ * go to the first run, the rest to the second. Without GPS on all three points the route is
+ * kept on the first run (it can be redrawn).
+ */
+export function splitPath(path: LatLng[] | null, a: LatLng | null, box: LatLng | null, b: LatLng | null): [LatLng[] | null, LatLng[] | null] {
+  if (!path?.length) return [null, null];
+  if (!a || !b || !box) return [path, null];
+  const k = Math.cos((box[0] * Math.PI) / 180);
+  const xy = (p: LatLng) => [p[1] * k, p[0]] as const;
+  const pts = [a, ...path, b].map(xy);
+  const [px, py] = xy(box);
+  let best = 0;
+  let bestD = Infinity;
+  for (let j = 0; j < pts.length - 1; j++) {
+    const [x1, y1] = pts[j]!;
+    const [x2, y2] = pts[j + 1]!;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 ? Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2)) : 0;
+    const d = (x1 + t * dx - px) ** 2 + (y1 + t * dy - py) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = j;
+    }
+  }
+  const first = path.slice(0, best);
+  const second = path.slice(best);
+  return [first.length ? first : null, second.length ? second : null];
+}
+
+/** Nodes downstream of `start` (following cables), using `links`. */
+function downstream(start: string, links: Pick<DbLink, 'fromNodeId' | 'toNodeId'>[]) {
+  const seen = new Set<string>();
+  const stack = [start];
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const l of links) if (l.fromNodeId === id) stack.push(l.toNodeId);
+  }
+  return seen;
+}
+
+export async function insertBoxIntoCable(linkId: string, input: FiberInsertBoxData) {
+  const cur = await prisma.fiberLink.findUnique({ where: { id: linkId } });
+  if (!cur) throw notFound('Cable');
+  const cores = (input.wholeCable ?? true) && cur.cableCode?.trim()
+    ? [cur, ...(await cableSiblings(cur, cur.id))].sort((x, y) => (x.coreNumber ?? 0) - (y.coreNumber ?? 0))
+    : [cur];
+  const coreIds = new Set(cores.map((c) => c.id));
+
+  const nodes = await prisma.fiberNode.findMany();
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const a = byId.get(cur.fromNodeId);
+  const b = byId.get(cur.toNodeId);
+  if (!a || !b) throw notFound('Node');
+
+  // ---- The box: existing or new.
+  let box: DbNode | null = null;
+  let newBox: (Prisma.FiberNodeCreateInput & { cablePorts: number }) | null = null;
+  if (input.boxId) {
+    box = byId.get(input.boxId) ?? null;
+    if (!box || box.type !== 'TJ_BOX') throw badRequest('Choose a TJ box to insert');
+    if (box.id === a.id || box.id === b.id) throw badRequest(`The cable already ends at ${box.name}`);
+    // No loops: after the cut, A → box → B must not close a circle.
+    const links = (await prisma.fiberLink.findMany({ select: { id: true, fromNodeId: true, toNodeId: true } })).filter((l) => !coreIds.has(l.id));
+    if (downstream(box.id, links).has(a.id) || downstream(b.id, links).has(box.id))
+      throw badRequest(`Putting ${box.name} on this cable would create a loop in the network`);
+  } else if (input.newBox) {
+    const nb = input.newBox;
+    await assertUniqueName('TJ_BOX', nb.name);
+    newBox = {
+      type: 'TJ_BOX',
+      name: nb.name,
+      latitude: nb.latitude ?? null,
+      longitude: nb.longitude ?? null,
+      address: nb.address ?? null,
+      notes: nb.notes ?? null,
+      cablePorts: Math.max(nb.cablePorts ?? DEFAULT_BOX_PORTS, cores.length),
+      posX: nb.posX ?? 0,
+      posY: nb.posY ?? 0,
+    };
+  } else throw badRequest('Choose a TJ box or create a new one');
+
+  // ---- A splice position N per core: In N free and Out N free.
+  const slots: number[] = [];
+  const total = box ? portCount(box)! : newBox!.cablePorts;
+  if (box) {
+    const [ins, outs] = await Promise.all([
+      prisma.fiberLink.findMany({ where: { toNodeId: box.id }, select: { toPort: true } }),
+      prisma.fiberLink.findMany({ where: { fromNodeId: box.id }, select: { fromPort: true } }),
+    ]);
+    const used = new Set([...ins.map((l) => l.toPort), ...outs.map((l) => l.fromPort)]);
+    for (let p = 1; p <= total && slots.length < cores.length; p++) if (!used.has(p)) slots.push(p);
+  } else for (let p = 1; p <= cores.length; p++) slots.push(p);
+  if (slots.length < cores.length)
+    throw badRequest(`${box!.name} has only ${slots.length} free splice position${slots.length === 1 ? '' : 's'} — ${cores.length} needed`);
+
+  // ---- Meter marks and lengths of the two runs (shared by every core of the cable).
+  const { mark, lengthToBox } = input;
+  if (mark != null && cur.startMark != null && cur.endMark != null) {
+    const [lo, hi] = [Math.min(cur.startMark, cur.endMark), Math.max(cur.startMark, cur.endMark)];
+    if (mark < lo || mark > hi) throw badRequest(`Meter mark ${mark} is outside this cable's run (${cur.startMark}–${cur.endMark})`);
+  }
+  const end1 = mark ?? null;
+  const start2 = mark ?? null;
+  const len1 = lengthToBox ?? markLength(cur.startMark, end1);
+  const len2 =
+    markLength(start2, cur.endMark) ?? (cur.length != null && len1 != null ? Math.max(0, cur.length - len1) : null);
+
+  const boxPos: LatLng | null = box
+    ? nodeLatLng(box, byId)
+    : newBox!.latitude != null && newBox!.longitude != null ? [newBox!.latitude, newBox!.longitude] : null;
+  const [path1, path2] = splitPath(
+    Array.isArray(cur.path) ? (cur.path as LatLng[]) : null,
+    nodeLatLng(a, byId),
+    boxPos,
+    nodeLatLng(b, byId),
+  );
+  const json = (p: LatLng[] | null) => (p ? (p as Prisma.InputJsonValue) : Prisma.DbNull);
+
+  const result = await prisma.$transaction(async (tx) => {
+    const target = box ?? (await tx.fiberNode.create({ data: newBox! }));
+    const created: DbLink[] = [];
+    for (const [i, core] of cores.entries()) {
+      const pos = slots[i]!;
+      // First run: A → box, landing on splice position N (frees B's input for the second run).
+      await tx.fiberLink.update({
+        where: { id: core.id },
+        data: { toNodeId: target.id, toPort: pos, endMark: end1, length: len1, path: json(path1) },
+      });
+      // Second run: box Out N → B, same cable ID / core / colors.
+      created.push(
+        await tx.fiberLink.create({
+          data: {
+            fromNodeId: target.id,
+            fromPort: pos,
+            toNodeId: core.toNodeId,
+            toPort: core.toPort,
+            cableCode: core.cableCode,
+            coreCount: core.coreCount,
+            tubeColor: core.tubeColor,
+            coreNumber: core.coreNumber,
+            coreColor: core.coreColor,
+            startMark: start2,
+            endMark: core.endMark,
+            length: len2,
+            path: json(path2),
+          },
+        }),
+      );
+    }
+    return { box: target, created };
+  });
+  await resyncCustomers();
+  return { box: serializeNode(result.box), links: result.created.map(serializeLink) };
 }

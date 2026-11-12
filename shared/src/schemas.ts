@@ -238,6 +238,28 @@ export type FiberLinkInput = z.input<typeof fiberLinkCreateSchema>;
 export const fiberLinkUpdateSchema = fiberLinkBase.omit({ fromNodeId: true, fromPort: true, toNodeId: true, toPort: true }).partial();
 export type FiberLinkUpdateInput = z.input<typeof fiberLinkUpdateSchema>;
 
+/**
+ * Cut a cable and put a TJ box in the middle: A → B becomes A → box (splice position N) and
+ * box Out N → B, for one core or every core of the cable. Either `boxId` (existing TJ box) or
+ * `newBox` (created on the fly) is required.
+ */
+export const fiberInsertBoxSchema = z
+  .object({
+    boxId: optStr(64),
+    newBox: fiberNodeBase
+      .pick({ name: true, latitude: true, longitude: true, address: true, cablePorts: true, notes: true, posX: true, posY: true })
+      .optional(),
+    /** All cores of the physical cable (true) or only the selected core. */
+    wholeCable: z.boolean().optional(),
+    /** Sheath meter mark at the new box: ends the first run and starts the second. */
+    mark: optInt(0, 1_000_000),
+    /** Length of the first run (from the upstream end to the box), m. */
+    lengthToBox: optInt(0, 200_000),
+  })
+  .refine((v) => !!v.boxId || !!v.newBox, { message: 'Choose a TJ box or create a new one', path: ['boxId'] });
+export type FiberInsertBoxInput = z.input<typeof fiberInsertBoxSchema>;
+export type FiberInsertBoxData = z.output<typeof fiberInsertBoxSchema>;
+
 export const fiberAssignSchema = z.object({
   customerId: z.string().min(1),
   nodeId: z.string().min(1),

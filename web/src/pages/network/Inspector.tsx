@@ -45,23 +45,27 @@ import {
   useCreateLink,
   useDeleteLink,
   useDeleteNode,
+  useInsertBox,
   useUnassignPort,
   useUpdateLink,
   useUpdateNode,
 } from '@/lib/queries';
 import {
   cableCores,
+  distanceM,
   fiberHex,
   fmtLength,
   fmtMarks,
   freeInSlots,
   freeOutPorts,
   nextFreeCore,
+  nextName,
   nodePos,
   outputPorts,
   polylineM,
   portName,
   sourceLabel,
+  type LatLng,
   type NetIndex,
 } from '@/lib/fiber';
 import { CustomerPickerModal } from '@/components/CustomerPickerModal';
@@ -947,6 +951,7 @@ export function LinkInspector({
   const update = useUpdateLink();
   const del = useDeleteLink();
   const [confirm, setConfirm] = useState(false);
+  const [inserting, setInserting] = useState(false);
   const form = useForm<LinkValues>({ resolver: zodResolver(fiberLinkUpdateSchema) as never, defaultValues: linkValues(link) });
   useEffect(() => form.reset(linkValues(link)), [link.id, link.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps
   const from = ix.nodes.get(link.fromNodeId);
@@ -1008,9 +1013,12 @@ export function LinkInspector({
           ))}
         </div>
         {canManage && (
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button size="sm" variant="secondary" onClick={() => onEditRoute(link)} disabled={gps == null} title={gps == null ? 'Both ends need GPS' : undefined}>
               <Route className="size-4" /> {link.path?.length ? 'Edit route on map' : 'Draw route on map'}
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => setInserting(true)} title="Cut this cable and splice a TJ box into it">
+              <Box className="size-4" /> Insert TJ box
             </Button>
             {link.path?.length ? <span className="num text-xs text-muted">{link.path.length} bend points</span> : null}
           </div>
@@ -1078,6 +1086,18 @@ export function LinkInspector({
           </IconButton>
         </div>
       )}
+      {canManage && (
+        <InsertBoxModal
+          link={link}
+          ix={ix}
+          open={inserting}
+          onClose={() => setInserting(false)}
+          onDone={(box) => {
+            setInserting(false);
+            onSelect({ kind: 'node', id: box.id });
+          }}
+        />
+      )}
       <ConfirmDialog
         open={confirm}
         onClose={() => setConfirm(false)}
@@ -1098,6 +1118,319 @@ export function LinkInspector({
         }}
       />
     </form>
+  );
+}
+
+// ---- Insert a TJ box into a cable -------------------------------------------
+/** Point `frac` (0..1) of the way along a polyline. */
+function pointAlong(pts: LatLng[], frac: number): LatLng | null {
+  if (pts.length < 2) return null;
+  let left = polylineM(pts) * frac;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i]!;
+    const b = pts[i + 1]!;
+    const d = distanceM(a, b);
+    if (left <= d) {
+      const t = d ? left / d : 0;
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+    left -= d;
+  }
+  return pts[pts.length - 1]!;
+}
+
+const round6 = (v: number) => String(Math.round(v * 1e6) / 1e6);
+
+/**
+ * Cut a cable and splice a TJ box (new or existing) into it: A → B becomes A → box In N and
+ * box Out N → B for every core, keeping cable ID, core numbers and colors.
+ */
+export function InsertBoxModal({
+  link,
+  ix,
+  open,
+  onClose,
+  onDone,
+}: {
+  link: FiberLink;
+  ix: NetIndex;
+  open: boolean;
+  onClose: () => void;
+  onDone: (box: FiberNode) => void;
+}) {
+  const insert = useInsertBox();
+  const from = ix.nodes.get(link.fromNodeId);
+  const to = ix.nodes.get(link.toNodeId);
+  const cores = cableCores(ix, link);
+  const [mode, setMode] = useState<'new' | 'existing'>('new');
+  const [whole, setWhole] = useState(true);
+  const [name, setName] = useState('');
+  const [ports, setPorts] = useState('');
+  const [lat, setLat] = useState('');
+  const [lng, setLng] = useState('');
+  const [address, setAddress] = useState('');
+  const [boxId, setBoxId] = useState('');
+  const [mark, setMark] = useState('');
+  const [toBox, setToBox] = useState('');
+  const n = whole ? cores.length : 1;
+
+  const a = nodePos(ix, from);
+  const b = nodePos(ix, to);
+  const route = a && b ? [a, ...(link.path ?? []), b] : null;
+  const boxPos: LatLng | null =
+    mode === 'existing'
+      ? nodePos(ix, ix.nodes.get(boxId))
+      : lat !== '' && lng !== '' && Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))
+        ? [Number(lat), Number(lng)]
+        : null;
+  const gpsToBox = a && boxPos ? distanceM(a, boxPos) : null;
+
+  // Existing TJ boxes that can take this cable: not one of its ends, with enough free positions (In N + Out N both free).
+  const boxes = useMemo(
+    () =>
+      [...ix.nodes.values()]
+        .filter((x) => x.type === 'TJ_BOX' && x.id !== link.fromNodeId && x.id !== link.toNodeId)
+        .map((x) => ({
+          node: x,
+          free: freeInSlots(ix, x).filter((p) => !ix.outByPort.has(`${x.id}:${p}`)).length,
+        }))
+        .sort((p, q) => p.node.name.localeCompare(q.node.name)),
+    [ix, link],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    setMode('new');
+    setWhole(true);
+    setName(nextName([...ix.nodes.values()], 'TJ_BOX'));
+    setPorts(String(Math.max(4, cores.length)));
+    setLat('');
+    setLng('');
+    setAddress('');
+    setBoxId(boxes.find((x) => x.free >= cores.length)?.node.id ?? '');
+    setMark('');
+    setToBox('');
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const placeMidway = () => {
+    const p = route && pointAlong(route, 0.5);
+    if (!p) return;
+    setLat(round6(p[0]));
+    setLng(round6(p[1]));
+  };
+  const pasteCoords = async () => {
+    try {
+      const ll = parseLatLng(await navigator.clipboard.readText());
+      if (!ll) return toast.error('Clipboard has no coordinates — copy something like "23.9085, 90.2276"');
+      setLat(String(ll[0]));
+      setLng(String(ll[1]));
+    } catch {
+      toast.error('Clipboard access blocked — paste into the Latitude field instead (Ctrl/⌘+V)');
+    }
+  };
+  const onCoordPaste = (e: ClipboardEvent<HTMLInputElement>) => {
+    const ll = parseLatLng(e.clipboardData.getData('text'));
+    if (!ll) return;
+    e.preventDefault();
+    setLat(String(ll[0]));
+    setLng(String(ll[1]));
+  };
+
+  // Schematic spot for a new box: halfway between the two ends (splitters sit inside their box).
+  const canvasOf = (x: FiberNode | undefined) => (x?.type === 'SPLITTER' && x.boxId ? ix.nodes.get(x.boxId) : x);
+  const ca = canvasOf(from);
+  const cb = canvasOf(to);
+
+  const chosenBox = boxes.find((x) => x.node.id === boxId);
+  const blocked =
+    mode === 'new'
+      ? !name.trim()
+        ? 'Name the new box'
+        : null
+      : !chosenBox
+        ? 'Choose a TJ box'
+        : chosenBox.free < n
+          ? `${chosenBox.node.name} has only ${chosenBox.free} free splice position${chosenBox.free === 1 ? '' : 's'}`
+          : null;
+
+  const submit = async () => {
+    try {
+      const res = await insert.mutateAsync({
+        linkId: link.id,
+        wholeCable: whole,
+        mark: mark || null,
+        lengthToBox: toBox || null,
+        ...(mode === 'existing'
+          ? { boxId }
+          : {
+              newBox: {
+                name: name.trim(),
+                cablePorts: ports || null,
+                latitude: lat || null,
+                longitude: lng || null,
+                address: address || null,
+                posX: ca && cb ? Math.round((ca.posX + cb.posX) / 2) : undefined,
+                posY: ca && cb ? Math.round((ca.posY + cb.posY) / 2) : undefined,
+              },
+            }),
+      });
+      toast.success(`${res.box.name} inserted · ${res.links.length} core${res.links.length === 1 ? '' : 's'} spliced through`);
+      onDone(res.box);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    }
+  };
+
+  const boxLabel = mode === 'new' ? name.trim() || 'New box' : (chosenBox?.node.name ?? 'TJ box');
+  const marksHint =
+    link.startMark != null && link.endMark != null ? (
+      <>
+        Between <span className="num">{link.startMark}</span> and <span className="num">{link.endMark}</span> — splits the marks of both runs
+      </>
+    ) : (
+      'Printed on the sheath where the box is'
+    );
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Insert TJ box into cable"
+      subtitle={
+        <span className="num">
+          {from?.name} → <span className="text-accent">{boxLabel}</span> → {to?.name}
+        </span>
+      }
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={submit} loading={insert.isPending} disabled={!!blocked} title={blocked ?? undefined}>
+            <Box className="size-4" /> Insert box
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <div className="flex w-fit items-center gap-1 rounded-lg border border-hairline bg-surface p-1" role="tablist" aria-label="Box">
+          {(
+            [
+              ['new', 'New TJ box'],
+              ['existing', 'Existing TJ box'],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              role="tab"
+              aria-selected={mode === v}
+              onClick={() => setMode(v)}
+              className={clsx(
+                'flex h-8 items-center rounded-md px-3 text-[13px] font-medium transition-colors',
+                mode === v ? 'bg-primary text-on-primary' : 'text-muted-strong hover:text-strong',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {mode === 'new' ? (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Name">
+              <Input value={name} onChange={(e) => setName(e.target.value)} numeric />
+            </Field>
+            <Field label="Splice positions" hint={n > 4 ? <>At least <span className="num">{n}</span> for this cable</> : undefined}>
+              <Input value={ports} onChange={(e) => setPorts(e.target.value)} numeric inputMode="numeric" />
+            </Field>
+            <Field label="Latitude">
+              <Input value={lat} onChange={(e) => setLat(e.target.value)} onPaste={onCoordPaste} numeric inputMode="decimal" />
+            </Field>
+            <Field label="Longitude">
+              <Input value={lng} onChange={(e) => setLng(e.target.value)} onPaste={onCoordPaste} numeric inputMode="decimal" />
+            </Field>
+            <div className="col-span-2 -mt-1 flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="ghost" onClick={pasteCoords} title="Paste “lat, lng” from the clipboard">
+                <ClipboardPaste className="size-4" /> Paste
+              </Button>
+              <Button size="sm" variant="ghost" onClick={placeMidway} disabled={!route} title={route ? 'Halfway along the cable route' : 'Both ends need GPS'}>
+                <MapPin className="size-4" /> Midway on route
+              </Button>
+            </div>
+            <Field label="Address / landmark" className="col-span-2">
+              <Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Pole, junction, shop…" />
+            </Field>
+          </div>
+        ) : (
+          <Field label="TJ box" hint="Needs a free splice position (In N and Out N) for every core">
+            <Select value={boxId} onChange={(e) => setBoxId(e.target.value)}>
+              {!boxes.length && <option value="">No other TJ boxes</option>}
+              {boxes.map(({ node: x, free }) => (
+                <option key={x.id} value={x.id} disabled={free < n}>
+                  {x.name} · {free} free{x.address ? ` · ${x.address}` : ''}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+
+        {cores.length > 1 && (
+          <label className="flex items-start gap-2 rounded-lg bg-surface-2 px-3 py-2.5 text-[13px] text-strong">
+            <input type="checkbox" className="mt-0.5 size-4 accent-[#FCD535]" checked={whole} onChange={(e) => setWhole(e.target.checked)} />
+            <span>
+              All <span className="num">{cores.length}</span> cores of cable <span className="num">{link.cableCode}</span>
+              <span className="block text-xs text-muted">
+                {whole ? 'The whole cable is cut and every core spliced straight through the box.' : `Only core #${link.coreNumber ?? '?'} goes through the box.`}
+              </span>
+            </span>
+          </label>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Meter mark at box" hint={marksHint}>
+            <Input value={mark} onChange={(e) => setMark(e.target.value)} numeric inputMode="numeric" trailing="m" />
+          </Field>
+          <Field
+            label={`Length ${from?.name ?? ''} → box`}
+            hint={
+              link.length != null ? (
+                <>
+                  Of <span className="num">{fmtLength(link.length)}</span> total; the rest goes to the second run
+                </>
+              ) : (
+                'Optional'
+              )
+            }
+          >
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <Input value={toBox} onChange={(e) => setToBox(e.target.value)} numeric inputMode="numeric" trailing="m" />
+              </div>
+              {gpsToBox != null && (
+                <Button size="md" variant="secondary" onClick={() => setToBox(String(Math.round(gpsToBox)))} title="Straight-line GPS distance">
+                  <Ruler className="size-4" />
+                </Button>
+              )}
+            </div>
+          </Field>
+        </div>
+
+        <ul className="space-y-0.5 rounded-lg border border-hairline p-2 text-[13px]">
+          {(whole ? cores : [link]).map((c, i) => (
+            <li key={c.id} className="flex items-center gap-2 px-1 py-1">
+              <ColorDot color={c.coreColor} />
+              <span className="num w-8 text-muted-strong">{c.coreNumber != null ? `#${c.coreNumber}` : '—'}</span>
+              <span className="num min-w-0 truncate text-strong">{from && c.fromPort != null ? portName(from, c.fromPort) : from?.name}</span>
+              <ArrowRight className="size-3.5 shrink-0 text-muted" />
+              <span className="num shrink-0 text-accent">{boxLabel}{mode === 'new' ? ` · In ${i + 1}` : ''}</span>
+              <ArrowRight className="size-3.5 shrink-0 text-muted" />
+              <span className="num min-w-0 truncate text-muted-strong">{to?.name}{c.toPort != null ? ` · In ${c.toPort}` : ''}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </Modal>
   );
 }
 
@@ -1151,6 +1484,8 @@ export function NewLinkModal({ draft, ix, onClose, onCreated }: { draft: LinkDra
       linkValues({
         // Don't silently join an existing cable to the same device: new cable starts without an ID then.
         cableCode: cables.some((x) => x.cores[0]!.cableCode === code) ? null : code,
+        // Continuing an existing cable keeps its core count; otherwise default to the common 4-core drop.
+        coreCount: (feed?.cableCode && feed.cableCode === code ? feed.coreCount : null) ?? 4,
         tubeColor: 'Black',
         coreNumber: 1,
         coreColor: from.type === 'SPLITTER' && draft.fromPort ? fiberColorFor(draft.fromPort) : 'Blue',

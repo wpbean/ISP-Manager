@@ -8,6 +8,7 @@ import type {
   DashboardStats,
   FiberAssignInput,
   FiberLink,
+  FiberInsertBoxInput,
   FiberLinkInput,
   FiberLinkUpdateInput,
   FiberNetwork,
@@ -253,6 +254,15 @@ export function useUpdateLink() {
   return useMutation({
     mutationFn: async ({ id, ...body }: FiberLinkUpdateInput & { id: string }) =>
       (await api.patch<{ data: FiberLink }>(`/network/links/${id}`, body)).data.data,
+    onSuccess: invalidate,
+  });
+}
+
+export function useInsertBox() {
+  const invalidate = useInvalidateNetwork();
+  return useMutation({
+    mutationFn: async ({ linkId, ...body }: FiberInsertBoxInput & { linkId: string }) =>
+      (await api.post<{ data: { box: FiberNode; links: FiberLink[] } }>(`/network/links/${linkId}/insert-box`, body)).data.data,
     onSuccess: invalidate,
   });
 }

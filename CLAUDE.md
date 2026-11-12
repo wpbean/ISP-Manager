@@ -96,7 +96,7 @@ Currency is BDT (৳); business timezone `Asia/Dhaka` decides "today" and month 
 | `POST /payments` (optional `collectedById`, defaults to caller) → `{ data: payment, customer }`; `DELETE /payments/:id` | `payments:create` / `payments:delete` |
 | `GET /payments/collectors` → active staff `{ id, name, role }` for the "Collected by" picker | `payments:create` |
 | `GET /network` → `{ nodes, links, customers }` (whole graph) | `network:read` |
-| `POST/PATCH/DELETE /network/nodes[/:id]`, `PATCH /network/positions`, `POST/PATCH/DELETE /network/links[/:id]`, `POST /network/assignments` `{customerId,nodeId,port}`, `DELETE /network/assignments/:customerId` | `network:manage` |
+| `POST/PATCH/DELETE /network/nodes[/:id]`, `PATCH /network/positions`, `POST/PATCH/DELETE /network/links[/:id]`, `POST /network/links/:id/insert-box` `{boxId \| newBox, wholeCable, mark, lengthToBox}` (cut a cable and splice a TJ box in: A→B becomes A→box In N + box Out N→B per core), `POST /network/assignments` `{customerId,nodeId,port}`, `DELETE /network/assignments/:customerId` | `network:manage` |
 | `GET/POST/PATCH/DELETE /users` | `users:manage` |
 
 Errors are always `{ error: { message, code, details? } }` with proper HTTP status

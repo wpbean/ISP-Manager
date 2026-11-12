@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   DEFAULT_BOX_PORTS,
   fiberAssignSchema,
+  fiberInsertBoxSchema,
   markLength,
   fiberLinkCreateSchema,
   fiberLinkUpdateSchema,
@@ -18,6 +19,7 @@ import {
   assertCoreFits,
   assertPortsFit,
   cableSiblings,
+  insertBoxIntoCable,
   assertUniqueName,
   loadNetwork,
   portCount,
@@ -156,6 +158,12 @@ networkRouter.patch('/links/:id', manage, async (req, res) => {
   });
   await syncCable(link, id, changed);
   res.json({ data: serializeLink(link) });
+});
+
+/** Cut the cable and splice a TJ box (existing or new) into it. */
+networkRouter.post('/links/:id/insert-box', manage, async (req, res) => {
+  const data = fiberInsertBoxSchema.parse(req.body);
+  res.status(201).json({ data: await insertBoxIntoCable(String(req.params.id), data) });
 });
 
 networkRouter.delete('/links/:id', manage, async (req, res) => {
