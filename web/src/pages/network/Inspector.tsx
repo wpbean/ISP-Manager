@@ -12,6 +12,7 @@ import {
   Crosshair,
   ExternalLink,
   MapPin,
+  Navigation,
   Plus,
   Route,
   Ruler,
@@ -190,8 +191,9 @@ export function NodeInspector({
   const del = useDeleteNode();
   const [confirm, setConfirm] = useState(false);
   const form = useForm<NodeValues>({ resolver: zodResolver(fiberNodeUpdateSchema) as never, defaultValues: nodeValues(node) });
-  const { register, handleSubmit, reset, setValue, formState } = form;
+  const { register, handleSubmit, reset, setValue, watch, formState } = form;
   useEffect(() => reset(nodeValues(node)), [node.id, node.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  const mapsUrl = googleMapsUrl(watch('latitude'), watch('longitude'));
 
   const Icon = NODE_ICON[node.type];
   const ro = !canManage;
@@ -347,17 +349,32 @@ export function NodeInspector({
             <Input {...register('longitude')} readOnly={ro} numeric inputMode="decimal" onPaste={onCoordPaste} />
           </Field>
         </div>
-        {canManage && (
+        {(canManage || mapsUrl) && (
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" variant="secondary" onClick={() => onPickOnMap(node)}>
-              <MapPin className="size-4" /> Pick on map
-            </Button>
-            <Button size="sm" variant="ghost" onClick={locate}>
-              <Crosshair className="size-4" /> My location
-            </Button>
-            <Button size="sm" variant="ghost" onClick={pasteCoords} title="Paste “lat, lng” from the clipboard">
-              <ClipboardPaste className="size-4" /> Paste
-            </Button>
+            {canManage && (
+              <>
+                <Button size="sm" variant="secondary" onClick={() => onPickOnMap(node)}>
+                  <MapPin className="size-4" /> Pick on map
+                </Button>
+                <Button size="sm" variant="ghost" onClick={locate}>
+                  <Crosshair className="size-4" /> My location
+                </Button>
+                <Button size="sm" variant="ghost" onClick={pasteCoords} title="Paste “lat, lng” from the clipboard">
+                  <ClipboardPaste className="size-4" /> Paste
+                </Button>
+              </>
+            )}
+            {mapsUrl && (
+              <a
+                href={mapsUrl}
+                target="_blank"
+                rel="noreferrer"
+                title="Open this location in Google Maps (opens the app on phones)"
+                className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-3 text-[13px] font-semibold leading-none whitespace-nowrap text-muted-strong transition-colors hover:bg-surface-2 hover:text-strong"
+              >
+                <Navigation className="size-4" /> Google Maps
+              </a>
+            )}
           </div>
         )}
       </Section>
@@ -1397,4 +1414,16 @@ export function Overview({ net, ix, onSelect }: { net: FiberNetwork; ix: NetInde
       </Section>
     </div>
   );
+}
+
+/**
+ * Universal Google Maps link: opens maps.google.com on desktop, and the Google Maps app on
+ * Android / iOS when installed (the OS hands the URL to the app). Null when coords are invalid.
+ */
+function googleMapsUrl(lat: unknown, lng: unknown): string | null {
+  const la = Number(lat);
+  const lo = Number(lng);
+  if (lat === '' || lng === '' || lat == null || lng == null) return null;
+  if (!Number.isFinite(la) || !Number.isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) return null;
+  return `https://www.google.com/maps/search/?api=1&query=${la},${lo}`;
 }
