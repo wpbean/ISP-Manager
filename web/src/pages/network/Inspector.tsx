@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ClipboardEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -8,6 +8,7 @@ import {
   ArrowRight,
   Box,
   Cable,
+  ClipboardPaste,
   Crosshair,
   ExternalLink,
   MapPin,
@@ -37,6 +38,7 @@ import {
   type FiberNodeType,
 } from '@isp/shared';
 import { errorMessage } from '@/lib/api';
+import { parseLatLng } from '@/lib/coords';
 import {
   useAssignPort,
   useCreateLink,
@@ -217,6 +219,31 @@ export function NodeInspector({
     );
   };
 
+  const applyCoords = (text: string) => {
+    const ll = parseLatLng(text);
+    if (!ll) return false;
+    setValue('latitude', String(ll[0]), { shouldDirty: true, shouldValidate: true });
+    setValue('longitude', String(ll[1]), { shouldDirty: true, shouldValidate: true });
+    return true;
+  };
+
+  const pasteCoords = async () => {
+    let text: string;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      return toast.error('Clipboard access blocked — paste into the Latitude field instead (Ctrl/⌘+V)');
+    }
+    if (!applyCoords(text)) toast.error('Clipboard has no coordinates — copy something like "23.9085, 90.2276"');
+  };
+
+  // Pasting a full "lat, lng" pair into either field fills both.
+  const onCoordPaste = (e: ClipboardEvent<HTMLInputElement>) => {
+    if (ro) return;
+    const text = e.clipboardData.getData('text');
+    if (/[,\s]/.test(text.trim()) && applyCoords(text)) e.preventDefault();
+  };
+
   const boxes = net.nodes.filter((n) => n.type === 'TJ_BOX');
   const into = ix.into.get(node.id) ?? [];
   const out = ix.out.get(node.id) ?? [];
@@ -314,10 +341,10 @@ export function NodeInspector({
       <Section title="GPS location">
         <div className="grid grid-cols-2 gap-3">
           <Field label="Latitude" error={formState.errors.latitude?.message}>
-            <Input {...register('latitude')} readOnly={ro} numeric inputMode="decimal" />
+            <Input {...register('latitude')} readOnly={ro} numeric inputMode="decimal" onPaste={onCoordPaste} />
           </Field>
           <Field label="Longitude" error={formState.errors.longitude?.message}>
-            <Input {...register('longitude')} readOnly={ro} numeric inputMode="decimal" />
+            <Input {...register('longitude')} readOnly={ro} numeric inputMode="decimal" onPaste={onCoordPaste} />
           </Field>
         </div>
         {canManage && (
@@ -327,6 +354,9 @@ export function NodeInspector({
             </Button>
             <Button size="sm" variant="ghost" onClick={locate}>
               <Crosshair className="size-4" /> My location
+            </Button>
+            <Button size="sm" variant="ghost" onClick={pasteCoords} title="Paste “lat, lng” from the clipboard">
+              <ClipboardPaste className="size-4" /> Paste
             </Button>
           </div>
         )}
