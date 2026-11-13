@@ -110,7 +110,12 @@ export async function validateNewLink(input: FiberLinkInput & { fromPort?: numbe
     prisma.fiberNode.findUnique({ where: { id: input.toNodeId } }),
   ]);
   if (!from || !to) throw notFound('Node');
-  if (to.type === 'OLT') throw badRequest('An OLT cannot be the downstream end of a cable');
+  if (to.type === 'OLT') {
+    // OLT uplink: one core in, from a TJ box out port (the backbone side).
+    if (from.type !== 'TJ_BOX') throw badRequest('An OLT uplink must come from a TJ box');
+    const uplink = await prisma.fiberLink.findFirst({ where: { toNodeId: to.id } });
+    if (uplink) throw duplicate(`${to.name} already has an uplink cable`);
+  }
 
   const fromPort = input.fromPort ?? null;
   const portWord = from.type === 'OLT' ? 'PON port' : from.type === 'TJ_BOX' ? 'cable out port' : 'output port';

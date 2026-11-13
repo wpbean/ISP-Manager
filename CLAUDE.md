@@ -59,7 +59,8 @@ Demo logins (after seed): `admin@isp.local / admin12345`; `manager@`, `tech@`, `
   `|end − start|`), `path` (map waypoints JSON). **Multi-core cables**: cores with the same `cableCode` between the same two
   nodes are one physical cable (`cableKey()` in shared); `CABLE_SHARED_FIELDS` (coreCount, length, marks, path) are synced to
   all its cores on create/PATCH, and a core number is used once per cable. Rules in `server/src/services/network.ts`: one
-  cable per port, one core per TJ splice position, one input per splitter, nothing into an OLT, no loops.
+  cable per port, one core per TJ splice position, one input per splitter, one **uplink** core into an
+  OLT and only from a TJ box out port (`toPort` null; customer tracing stops at the OLT), no loops.
 - Customer ↔ splitter port: `Customer.fiberNodeId` + `splitterPort` (unique together). After every network change
   `resyncCustomers()` traces upstream (through TJ boxes by splice position: Out N ← In N) and overwrites the customer's `oltName`, `ponPort`, `splitterName`, `splitterRatio`,
   `boxName`, `coreColor` (port N → TIA-598 color `fiberColorFor(N)`) — never clears them with nulls.

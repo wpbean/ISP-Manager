@@ -391,6 +391,34 @@ export function NodeInspector({
       {node.type === 'TJ_BOX' && <BoxPositions node={node} ix={ix} onSelect={onSelect} />}
 
       {node.type === 'OLT' && (
+        <Section title="Uplink">
+          {into[0] ? (
+            (() => {
+              const l = into[0];
+              const from = ix.nodes.get(l.fromNodeId);
+              return (
+                <RowButton onClick={() => onSelect({ kind: 'link', id: l.id })}>
+                  <ColorDot color={l.coreColor} />
+                  <span className="text-xs text-muted">from</span>
+                  <span className="num truncate text-strong">
+                    {from?.name}
+                    {from && l.fromPort != null ? ` · ${portName(from, l.fromPort)}` : ''}
+                  </span>
+                  <span className="num ml-auto shrink-0 text-xs text-muted">
+                    {[l.cableCode, l.coreNumber != null ? `#${l.coreNumber}` : null].filter(Boolean).join(' ')} {fmtLength(l.length)}
+                  </span>
+                </RowButton>
+              );
+            })()
+          ) : (
+            <p className="text-[13px] text-muted">
+              No uplink yet. On the schematic, drag from a free out port of the TJ box that brings the backbone fiber onto this OLT — or select that box and use “Run a cable”.
+            </p>
+          )}
+        </Section>
+      )}
+
+      {node.type === 'OLT' && (
         <Section title={`PON ports · ${outputPorts(node)}`}>
           <ul className="space-y-0.5">
             {Array.from({ length: outputPorts(node) }, (_, i) => {
@@ -571,10 +599,11 @@ function ConnectCableModal({
     }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Same rules as the canvas: nothing into an OLT, one input per splitter, one core per TJ splice position.
+  // Same rules as the canvas: one uplink per OLT (from a TJ box), one input per splitter, one core per TJ splice position.
   const targets = net.nodes
     .filter((t) => {
-      if (t.id === node.id || t.type === 'OLT') return false;
+      if (t.id === node.id) return false;
+      if (t.type === 'OLT') return node.type === 'TJ_BOX' && !ix.into.get(t.id)?.length;
       if (t.type === 'SPLITTER') return !ix.into.get(t.id)?.length;
       return freeInSlots(ix, t).length > 0;
     })
@@ -594,7 +623,7 @@ function ConnectCableModal({
           </Select>
         </Field>
         <Field label="To device">
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search TJ boxes and splitters" leading={<Search className="size-4" />} />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={node.type === 'TJ_BOX' ? 'Search TJ boxes, splitters and OLTs' : 'Search TJ boxes and splitters'} leading={<Search className="size-4" />} />
         </Field>
         <ul className="-mx-2 max-h-[40vh] divide-y divide-hairline overflow-y-auto">
           {targets.map((t) => {
@@ -612,7 +641,11 @@ function ConnectCableModal({
                   <TIcon className="size-4 shrink-0 text-accent" />
                   <span className="num min-w-0 flex-1 truncate text-sm font-medium text-strong">{t.name}</span>
                   <span className="num shrink-0 text-xs text-muted">
-                    {t.type === 'SPLITTER' ? `${t.splitterRatio ?? ''}${box ? ` · in ${box.name}` : ''}` : `${slots} free position${slots === 1 ? '' : 's'}`}
+                    {t.type === 'SPLITTER'
+                      ? `${t.splitterRatio ?? ''}${box ? ` · in ${box.name}` : ''}`
+                      : t.type === 'OLT'
+                        ? 'uplink'
+                        : `${slots} free position${slots === 1 ? '' : 's'}`}
                   </span>
                   <ArrowRight className="size-4 shrink-0 text-muted" />
                 </button>
@@ -966,6 +999,8 @@ export function LinkInspector({
     ? 'Give the cable an ID first'
     : to?.type === 'SPLITTER'
       ? 'A splitter takes a single input core'
+      : to?.type === 'OLT'
+        ? 'An OLT takes a single uplink core'
       : cableFull
         ? `All ${link.coreCount} cores are in use`
         : !freeFrom.length
@@ -1567,6 +1602,10 @@ export function NewLinkModal({ draft, ix, onClose, onCreated }: { draft: LinkDra
                   </option>
                 ))}
               </Select>
+            </Field>
+          ) : to?.type === 'OLT' ? (
+            <Field label="Into" hint="Backbone feed for the OLT">
+              <Input value="Uplink" readOnly />
             </Field>
           ) : (
             <div />

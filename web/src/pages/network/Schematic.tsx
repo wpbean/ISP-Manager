@@ -214,8 +214,25 @@ function PortRows({ node, ix }: NodeData) {
 
 const OltNode = memo(function OltNode({ data, selected }: NodeProps<FiberFlowNode>) {
   const n = data.node;
+  const uplink = data.ix.into.get(n.id)?.[0];
+  const upFrom = uplink ? data.ix.nodes.get(uplink.fromNodeId) : undefined;
+  const info = [n.ipAddress, n.model].filter(Boolean).join(' · ') || `${n.ponPorts ?? 0} PON ports`;
   return (
-    <Shell node={n} ix={data.ix} selected={selected} sub={[n.ipAddress, n.model].filter(Boolean).join(' · ') || `${n.ponPorts ?? 0} PON ports`}>
+    <Shell
+      node={n}
+      ix={data.ix}
+      selected={selected}
+      sub={upFrom ? <>uplink ← {upFrom.name} Out {uplink!.fromPort ?? ''} · {info}</> : info}
+    >
+      {/* Uplink input: one core from a TJ box out port (backbone side). */}
+      <Handle
+        type="target"
+        id="in"
+        position={Position.Left}
+        className={handleCls}
+        title={upFrom ? `Uplink from ${upFrom.name}` : 'Uplink — drag a TJ box out port here'}
+        style={{ ...handleBg, ...(uplink ? { background: fiberHex(uplink.coreColor) ?? '#0ecb81' } : {}), top: HEADER_H / 2 }}
+      />
       <PortRows {...data} />
     </Shell>
   );
@@ -660,7 +677,9 @@ function Canvas({ net, ix, selection, onSelect, canManage, onConnect, onCreateAt
     (c: Connection | Edge) => {
       const from = ix.nodes.get(c.source);
       const to = ix.nodes.get(c.target);
-      if (!from || !to || from.id === to.id || to.type === 'OLT') return false;
+      if (!from || !to || from.id === to.id) return false;
+      // OLT uplink: a single core, from a TJ box.
+      if (to.type === 'OLT' && (from.type !== 'TJ_BOX' || ix.into.get(to.id)?.length)) return false;
       const port = c.sourceHandle?.startsWith('p') ? Number(c.sourceHandle.slice(1)) : null;
       if (port != null && (ix.outByPort.has(`${from.id}:${port}`) || ix.custByPort.has(`${from.id}:${port}`))) return false;
       if (port == null) return false;
