@@ -29,6 +29,7 @@ import {
   cableKey,
   FIBER_NODE_LABELS,
   SPLITTER_RATIOS,
+  DEFAULT_BOX_PORTS,
   TJ_BOX_PORT_OPTIONS,
   fiberColorFor,
   fiberLinkUpdateSchema,
@@ -293,11 +294,11 @@ export function NodeInspector({
             </>
           )}
           {node.type === 'TJ_BOX' && (
-            <Field label="Ports" className="col-span-2" hint="In / out splice positions — splice any incoming core to any out core" error={formState.errors.cablePorts?.message}>
+            <Field label="Ports" className="col-span-2" hint="Total ports — half In (left), half Out (right); splice any incoming core to any out core" error={formState.errors.cablePorts?.message}>
               <Select {...register('cablePorts')} disabled={ro} className="num">
-                {boxPortOptions(node.cablePorts).map((p) => (
-                  <option key={p} value={p}>
-                    {p} ports
+                {boxRowOptions(node.cablePorts).map((rows) => (
+                  <option key={rows} value={rows}>
+                    {boxPortsLabel(rows)}
                   </option>
                 ))}
               </Select>
@@ -1334,7 +1335,7 @@ export function InsertBoxModal({
     setMode('new');
     setWhole(true);
     setName(nextName([...ix.nodes.values()], 'TJ_BOX'));
-    setPorts(String(Math.max(4, cores.length + (cores.length % 2))));
+    setPorts(String(Math.max(DEFAULT_BOX_PORTS, cores.length)));
     setLat('');
     setLng('');
     setAddress('');
@@ -1472,11 +1473,11 @@ export function InsertBoxModal({
             <Field label="Name">
               <Input value={name} onChange={(e) => setName(e.target.value)} numeric />
             </Field>
-            <Field label="Splice positions" hint={n > 4 ? <>At least <span className="num">{n}</span> for this cable</> : undefined}>
+            <Field label="Ports" hint={n > 1 ? <>At least <span className="num">{n * 2}</span> ({n} in / {n} out) for this cable</> : 'Half In, half Out'}>
               <Select value={ports} onChange={(e) => setPorts(e.target.value)} className="num">
-                {boxPortOptions(Number(ports)).filter((p) => p >= n).map((p) => (
-                  <option key={p} value={p}>
-                    {p} ports
+                {boxRowOptions(Number(ports)).filter((rows) => rows >= n).map((rows) => (
+                  <option key={rows} value={rows}>
+                    {boxPortsLabel(rows)}
                   </option>
                 ))}
               </Select>
@@ -1919,9 +1920,14 @@ function googleMapsUrl(lat: unknown, lng: unknown): string | null {
   return `https://www.google.com/maps/search/?api=1&query=${la},${lo}`;
 }
 
-/** Even port counts for a TJ box, plus the box's current count if it is an older odd value. */
-function boxPortOptions(current: number | null | undefined): number[] {
-  const opts: number[] = [...TJ_BOX_PORT_OPTIONS];
-  if (current && !opts.includes(current)) opts.push(current);
-  return opts.sort((a, b) => a - b);
+/**
+ * TJ box size choices as stored row counts (`cablePorts` = In/Out pairs): 2, 4, 6 … 48 total ports
+ * → 1 … 24 rows, plus the box's current row count if it is larger.
+ */
+function boxRowOptions(current: number | null | undefined): number[] {
+  const rows = TJ_BOX_PORT_OPTIONS.map((total) => total / 2);
+  if (current && !rows.includes(current)) rows.push(current);
+  return rows.sort((a, b) => a - b);
 }
+
+const boxPortsLabel = (rows: number) => `${rows * 2} ports · ${rows} in / ${rows} out`;

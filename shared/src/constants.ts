@@ -139,7 +139,10 @@ export const ponLabel = (prefix: string | null | undefined, port: number) => `${
 
 /** Default number of outgoing cable ports on a new TJ box. */
 export const DEFAULT_BOX_PORTS = 4;
-/** Port (splice position) counts offered for a TJ box: 2, 4, 6 … 48. */
+/**
+ * Total port counts offered for a TJ box: 2, 4, 6 … 48. Half are In (left), half Out (right), so a
+ * "4 port" box has 2 splice rows — stored `cablePorts` is the row count (= total / 2).
+ */
 export const TJ_BOX_PORT_OPTIONS = Array.from({ length: 24 }, (_, i) => (i + 1) * 2);
 
 /** Cable run length from its sheath meter marks (either direction), or null. */
