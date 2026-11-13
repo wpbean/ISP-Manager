@@ -29,6 +29,7 @@ import {
   cableKey,
   FIBER_NODE_LABELS,
   SPLITTER_RATIOS,
+  TJ_BOX_PORT_OPTIONS,
   fiberColorFor,
   fiberLinkUpdateSchema,
   markLength,
@@ -292,8 +293,14 @@ export function NodeInspector({
             </>
           )}
           {node.type === 'TJ_BOX' && (
-            <Field label="Splice positions" className="col-span-2" hint="In / out positions — splice any incoming core to any out core" error={formState.errors.cablePorts?.message}>
-              <Input {...register('cablePorts')} readOnly={ro} numeric inputMode="numeric" placeholder="4" />
+            <Field label="Ports" className="col-span-2" hint="In / out splice positions — splice any incoming core to any out core" error={formState.errors.cablePorts?.message}>
+              <Select {...register('cablePorts')} disabled={ro} className="num">
+                {boxPortOptions(node.cablePorts).map((p) => (
+                  <option key={p} value={p}>
+                    {p} ports
+                  </option>
+                ))}
+              </Select>
             </Field>
           )}
           {node.type === 'SPLITTER' && (
@@ -1327,7 +1334,7 @@ export function InsertBoxModal({
     setMode('new');
     setWhole(true);
     setName(nextName([...ix.nodes.values()], 'TJ_BOX'));
-    setPorts(String(Math.max(4, cores.length)));
+    setPorts(String(Math.max(4, cores.length + (cores.length % 2))));
     setLat('');
     setLng('');
     setAddress('');
@@ -1466,7 +1473,13 @@ export function InsertBoxModal({
               <Input value={name} onChange={(e) => setName(e.target.value)} numeric />
             </Field>
             <Field label="Splice positions" hint={n > 4 ? <>At least <span className="num">{n}</span> for this cable</> : undefined}>
-              <Input value={ports} onChange={(e) => setPorts(e.target.value)} numeric inputMode="numeric" />
+              <Select value={ports} onChange={(e) => setPorts(e.target.value)} className="num">
+                {boxPortOptions(Number(ports)).filter((p) => p >= n).map((p) => (
+                  <option key={p} value={p}>
+                    {p} ports
+                  </option>
+                ))}
+              </Select>
             </Field>
             <Field label="Latitude">
               <Input value={lat} onChange={(e) => setLat(e.target.value)} onPaste={onCoordPaste} numeric inputMode="decimal" />
@@ -1904,4 +1917,11 @@ function googleMapsUrl(lat: unknown, lng: unknown): string | null {
   if (lat === '' || lng === '' || lat == null || lng == null) return null;
   if (!Number.isFinite(la) || !Number.isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) return null;
   return `https://www.google.com/maps/search/?api=1&query=${la},${lo}`;
+}
+
+/** Even port counts for a TJ box, plus the box's current count if it is an older odd value. */
+function boxPortOptions(current: number | null | undefined): number[] {
+  const opts: number[] = [...TJ_BOX_PORT_OPTIONS];
+  if (current && !opts.includes(current)) opts.push(current);
+  return opts.sort((a, b) => a - b);
 }
