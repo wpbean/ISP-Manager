@@ -189,8 +189,10 @@ model FiberLink {
   fromPort   Int?
   toNodeId   String
   toNode     FiberNode @relation("LinkTo", fields: [toNodeId], references: [id], onDelete: Cascade)
-  /// TJ box only: splice position the core lands on. Core in on position N continues out on "Out N".
+  /// TJ box only: splice position the core lands on.
   toPort     Int?
+  /// Leaving a TJ box: the splice position (incoming core) this core is joined to. Null = not spliced.
+  spliceIn   Int?
 
   cableCode  String?
   /// Total cores in the physical cable (2, 4, 6, 12, 24…).
@@ -213,6 +215,7 @@ model FiberLink {
 
   @@unique([fromNodeId, fromPort])
   @@unique([toNodeId, toPort])
+  @@unique([fromNodeId, spliceIn])
   @@index([toNodeId])
 }
 

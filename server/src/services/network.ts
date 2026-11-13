@@ -82,12 +82,13 @@ export async function assertBox(boxId: string | null | undefined) {
 /** Reject shrinking a node's port count below ports that are in use. */
 export async function assertPortsFit(nodeId: string, count: number | null) {
   if (count == null) return;
-  const [link, spliced, customer] = await Promise.all([
+  const [link, spliced, joined, customer] = await Promise.all([
     prisma.fiberLink.findFirst({ where: { fromNodeId: nodeId, fromPort: { gt: count } } }),
     prisma.fiberLink.findFirst({ where: { toNodeId: nodeId, toPort: { gt: count } } }),
+    prisma.fiberLink.findFirst({ where: { fromNodeId: nodeId, spliceIn: { gt: count } } }),
     prisma.customer.findFirst({ where: { fiberNodeId: nodeId, splitterPort: { gt: count } } }),
   ]);
-  if (link || spliced || customer) throw badRequest(`Ports above ${count} are still in use — disconnect them first`);
+  if (link || spliced || joined || customer) throw badRequest(`Ports above ${count} are still in use — disconnect them first`);
 }
 
 /** Port on `node` is free (no outgoing cable, no customer). */
@@ -101,6 +102,22 @@ async function assertPortFree(nodeId: string, port: number, exceptCustomerId?: s
   ]);
   if (link) throw duplicate(`Port ${port} already has a cable connected`);
   if (customer) throw duplicate(`Port ${port} is already used by ${customer.name}`);
+}
+
+/**
+ * The splice position of TJ box `box` an outgoing core is joined to: must exist and not already be
+ * joined to another outgoing core. Returns null (not spliced) for null.
+ */
+export async function validateSplice(box: Pick<DbNode, 'id' | 'name' | 'type' | 'ponPorts' | 'cablePorts' | 'splitterRatio'>, spliceIn: number | null, exceptLinkId?: string) {
+  if (spliceIn == null) return null;
+  if (box.type !== 'TJ_BOX') throw badRequest('Only a core leaving a TJ box can be spliced to an incoming core');
+  const slots = portCount(box);
+  if (slots != null && spliceIn > slots) throw badRequest(`${box.name} only has ${slots} splice positions`);
+  const taken = await prisma.fiberLink.findFirst({
+    where: { fromNodeId: box.id, spliceIn, ...(exceptLinkId ? { id: { not: exceptLinkId } } : {}) },
+  });
+  if (taken) throw duplicate(`In ${spliceIn} of ${box.name} is already spliced to Out ${taken.fromPort ?? '?'}`);
+  return spliceIn;
 }
 
 export async function validateNewLink(input: FiberLinkInput & { fromPort?: number | null; toPort?: number | null }) {
@@ -150,7 +167,17 @@ export async function validateNewLink(input: FiberLinkInput & { fromPort?: numbe
   }
   if (upstream.has(to.id)) throw badRequest('That connection would create a loop in the network');
 
-  return { fromPort, toPort };
+  // Leaving a TJ box: which incoming core it is spliced to. Not given → the same-numbered position if still free.
+  let spliceIn: number | null = null;
+  if (from.type === 'TJ_BOX') {
+    if (input.spliceIn !== undefined) spliceIn = await validateSplice(from, (input.spliceIn as number | null) ?? null);
+    else {
+      const taken = await prisma.fiberLink.findFirst({ where: { fromNodeId: from.id, spliceIn: fromPort } });
+      spliceIn = taken ? null : fromPort;
+    }
+  }
+
+  return { fromPort, toPort, spliceIn };
 }
 
 // ---- Multi-core cables --------------------------------------------------------
@@ -262,8 +289,8 @@ export async function resyncCustomers() {
       }
       if (from.type === 'TJ_BOX') {
         if (!boxName) boxName = from.name;
-        // Core leaving "Out N" is spliced to the core that came in on position N.
-        l = l.fromPort != null ? feed.get(`${from.id}:${l.fromPort}`) : undefined;
+        // The core leaving the box is spliced to the core that came in on position `spliceIn`.
+        l = l.spliceIn != null ? feed.get(`${from.id}:${l.spliceIn}`) : undefined;
       } else l = feed.get(from.id);
     }
     const r = { oltName, ponPort, boxName };
@@ -385,15 +412,15 @@ export async function insertBoxIntoCable(linkId: string, input: FiberInsertBoxDa
     };
   } else throw badRequest('Choose a TJ box or create a new one');
 
-  // ---- A splice position N per core: In N free and Out N free.
+  // ---- A splice position N per core: In N free, Out N free and nothing spliced to In N.
   const slots: number[] = [];
   const total = box ? portCount(box)! : newBox!.cablePorts;
   if (box) {
     const [ins, outs] = await Promise.all([
       prisma.fiberLink.findMany({ where: { toNodeId: box.id }, select: { toPort: true } }),
-      prisma.fiberLink.findMany({ where: { fromNodeId: box.id }, select: { fromPort: true } }),
+      prisma.fiberLink.findMany({ where: { fromNodeId: box.id }, select: { fromPort: true, spliceIn: true } }),
     ]);
-    const used = new Set([...ins.map((l) => l.toPort), ...outs.map((l) => l.fromPort)]);
+    const used = new Set([...ins.map((l) => l.toPort), ...outs.map((l) => l.fromPort), ...outs.map((l) => l.spliceIn)]);
     for (let p = 1; p <= total && slots.length < cores.length; p++) if (!used.has(p)) slots.push(p);
   } else for (let p = 1; p <= cores.length; p++) slots.push(p);
   if (slots.length < cores.length)
@@ -438,6 +465,7 @@ export async function insertBoxIntoCable(linkId: string, input: FiberInsertBoxDa
           data: {
             fromNodeId: target.id,
             fromPort: pos,
+            spliceIn: pos,
             toNodeId: core.toNodeId,
             toPort: core.toPort,
             cableCode: core.cableCode,

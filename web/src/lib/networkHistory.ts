@@ -21,7 +21,7 @@ interface Entry {
 const LIMIT = 100;
 const NODE_FIELDS = ['name', 'latitude', 'longitude', 'address', 'ipAddress', 'model', 'ponPorts', 'ponPrefix', 'cablePorts', 'splitterRatio', 'boxId', 'notes'] as const;
 const LINK_ENDS = ['fromNodeId', 'fromPort', 'toNodeId', 'toPort'] as const;
-const LINK_FIELDS = ['cableCode', 'coreCount', 'tubeColor', 'coreNumber', 'coreColor', 'length', 'startMark', 'endMark', 'path', 'notes'] as const;
+const LINK_FIELDS = ['cableCode', 'coreCount', 'tubeColor', 'coreNumber', 'coreColor', 'length', 'startMark', 'endMark', 'path', 'notes', 'spliceIn'] as const;
 const TYPE_ORDER = { OLT: 0, TJ_BOX: 1, SPLITTER: 2 } as const;
 
 let undoStack: Entry[] = [];
@@ -168,6 +168,14 @@ async function apply(target: FiberNetwork) {
 
   // 6. Re-create cores, then edit the rest.
   const curLinks = byId((await fetchNetwork()).links);
+  // Splices are unique per box position: release positions that change hands before re-assigning them.
+  for (const l of target.links) {
+    const c = curLinks.get(resolve(l.id));
+    if (c && c.spliceIn != null && c.spliceIn !== l.spliceIn) {
+      await api.patch(`/network/links/${c.id}`, { spliceIn: null });
+      c.spliceIn = null;
+    }
+  }
   for (const l of target.links) {
     const c = curLinks.get(resolve(l.id));
     if (!c) {

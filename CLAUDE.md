@@ -49,11 +49,12 @@ Demo logins (after seed): `admin@isp.local / admin12345`; `manager@`, `tech@`, `
 - **Payment**: `receiptNo` (`R2026-000123`), amount, method (`CASH | BKASH | NAGAD | ROCKET | BANK | OTHER`),
   `transactionId`, `months` renewed, `periodFrom`/`periodTo`, `paidAt`, `collectedBy`.
 - **FiberNode** (`OLT | TJ_BOX | SPLITTER`, unique per type+name): GPS, schematic `posX/posY`; OLT `ponPorts`/`ponPrefix`
-  (port 4 → `0/1/4`), `ipAddress`, `model`; TJ box `cablePorts` (numbered **splice positions**, default 4: the core landing on
-  position N continues out on Out N); splitter `splitterRatio` (1:N = N output ports) and `boxId` (TJ box it sits in —
+  (port 4 → `0/1/4`), `ipAddress`, `model`; TJ box `cablePorts` (numbered **splice positions**, default 4: In N on the left, Out N on the right;
+  which incoming core feeds an outgoing core is the out core's `FiberLink.spliceIn` — any position, any color); splitter `splitterRatio` (1:N = N output ports) and `boxId` (TJ box it sits in —
   splitters have **no GPS of their own** — the server nulls it, and the map draws them at their box's pin).
 - **FiberLink**: one fiber core from `fromNodeId`+`fromPort` (OLT PON / TJ box out port / splitter output — always set) to `toNodeId`
-  (+ `toPort` = splice position when the target is a TJ box, unique per box), with
+  (+ `toPort` = splice position when the target is a TJ box, unique per box; `spliceIn` = the In position a core
+  leaving a TJ box is fused to, unique per box, null = not spliced, defaults to `fromPort` when free), with
   `cableCode`, `coreCount`, `tubeColor`, `coreNumber`, `coreColor`, `length` (m), `startMark`/`endMark` (sheath meter marks at
   each end — one cable ID can leave a TJ box on several ports, the marks tell the runs apart; if `length` is empty it becomes
   `|end − start|`), `path` (map waypoints JSON). **Multi-core cables**: cores with the same `cableCode` between the same two
@@ -62,7 +63,7 @@ Demo logins (after seed): `admin@isp.local / admin12345`; `manager@`, `tech@`, `
   cable per port, one core per TJ splice position, one input per splitter, one **uplink** core into an
   OLT and only from a TJ box out port (`toPort` null; customer tracing stops at the OLT), no loops.
 - Customer ↔ splitter port: `Customer.fiberNodeId` + `splitterPort` (unique together). After every network change
-  `resyncCustomers()` traces upstream (through TJ boxes by splice position: Out N ← In N) and overwrites the customer's `oltName`, `ponPort`, `splitterName`, `splitterRatio`,
+  `resyncCustomers()` traces upstream (through TJ boxes by splice: out core ← In `spliceIn`) and overwrites the customer's `oltName`, `ponPort`, `splitterName`, `splitterRatio`,
   `boxName`, `coreColor` (port N → TIA-598 color `fiberColorFor(N)`) — never clears them with nulls.
 - "Expired" is **derived** (`expireDate < today`), not a status value.
 
@@ -150,6 +151,8 @@ Errors are always `{ error: { message, code, details? } }` with proper HTTP stat
 per port, customers as child leaf nodes; drag port → node opens `NewLinkModal`) and **Map** (Leaflet: draggable pins,
 cable polylines colored by core color, "Pick on map" and "Draw route" modes). Shared `Inspector.tsx` edits the selection.
 Node geometry constants (`HEADER_H`, `ROW_H`) in `Schematic.tsx` keep customer leaves aligned with port rows.
+TJ boxes are wider (`BOX_W`) and draw a **splice tray** (`SpliceTray`) between the in/out columns: each join is a curve
+from the In core's color to the out core's color; splices are edited in the box Inspector ("Splices") or the cable Inspector.
 Splitters with a `boxId` are drawn **inside their TJ box** (React Flow child nodes, not draggable, saved `posX/posY` ignored):
 the box footer toggles expand/collapse (set kept in localStorage `isp.network.expandedBoxes`, collapsed by default; selecting a
 hidden splitter/customer auto-expands). Collapsed: cables to/from hidden splitters reroute to the box's `spl-in`/`spl-out`

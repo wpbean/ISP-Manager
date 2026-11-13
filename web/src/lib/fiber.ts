@@ -59,6 +59,8 @@ export interface NetIndex {
   into: Map<string, FiberLink[]>;
   /** Core spliced into TJ box position `p`: key `${id}:${p}`. */
   inBySlot: Map<string, FiberLink>;
+  /** Outgoing core joined to TJ box position `p` (its `spliceIn`): key `${id}:${p}`. */
+  spliceOf: Map<string, FiberLink>;
   /** Cores of each physical cable (see `cableKey`), sorted by core number. */
   cables: Map<string, FiberLink[]>;
   /** Customer on splitter port: key `${id}:${p}`. */
@@ -75,6 +77,7 @@ export function indexNetwork(net: FiberNetwork): NetIndex {
     out: new Map(),
     into: new Map(),
     inBySlot: new Map(),
+    spliceOf: new Map(),
     cables: new Map(),
     custByPort: new Map(),
     customers: new Map(net.customers.map((c) => [c.id, c])),
@@ -85,6 +88,7 @@ export function indexNetwork(net: FiberNetwork): NetIndex {
     ix.out.set(l.fromNodeId, [...(ix.out.get(l.fromNodeId) ?? []), l]);
     ix.into.set(l.toNodeId, [...(ix.into.get(l.toNodeId) ?? []), l]);
     if (l.toPort != null) ix.inBySlot.set(`${l.toNodeId}:${l.toPort}`, l);
+    if (l.spliceIn != null) ix.spliceOf.set(`${l.fromNodeId}:${l.spliceIn}`, l);
     const k = cableKey(l);
     if (k) ix.cables.set(k, [...(ix.cables.get(k) ?? []), l]);
   }
@@ -146,4 +150,32 @@ export function freeInSlots(ix: NetIndex, n: FiberNode): number[] {
 export function sourceLabel(ix: NetIndex, l: FiberLink): string {
   const from = ix.nodes.get(l.fromNodeId);
   return from ? `${from.name}${l.fromPort != null ? ` · ${portName(from, l.fromPort)}` : ''}` : '—';
+}
+
+/** Short core tag, e.g. "9145 #2" (cable ID + core number). */
+export const coreTag = (l: Pick<FiberLink, 'cableCode' | 'coreNumber'>) =>
+  [l.cableCode, l.coreNumber != null ? `#${l.coreNumber}` : null].filter(Boolean).join(' ');
+
+/** TJ box positions no outgoing core is spliced to yet (plus `keep`, the current choice). */
+export function freeSpliceIns(ix: NetIndex, box: FiberNode, keep?: number | null): number[] {
+  if (box.type !== 'TJ_BOX') return [];
+  return Array.from({ length: outputPorts(box) }, (_, i) => i + 1).filter((p) => p === keep || !ix.spliceOf.has(`${box.id}:${p}`));
+}
+
+/**
+ * Default splice for a new core leaving TJ box `box` on out port `port`: the same-numbered
+ * position if nothing is joined to it, else the first incoming core still unspliced, else none.
+ */
+export function defaultSplice(ix: NetIndex, box: FiberNode, port: number | null): number | null {
+  if (box.type !== 'TJ_BOX') return null;
+  const free = freeSpliceIns(ix, box);
+  if (port != null && free.includes(port)) return port;
+  return free.find((p) => ix.inBySlot.has(`${box.id}:${p}`)) ?? null;
+}
+
+/** "In 2 · OLT-01 9145 #2 Orange" — option label for a splice position. */
+export function spliceInLabel(ix: NetIndex, box: FiberNode, pos: number): string {
+  const l = ix.inBySlot.get(`${box.id}:${pos}`);
+  const src = l ? ix.nodes.get(l.fromNodeId) : undefined;
+  return l ? `In ${pos} · ← ${src?.name ?? '?'} ${coreTag(l)}${l.coreColor ? ` ${l.coreColor}` : ''}` : `In ${pos} · no core yet`;
 }

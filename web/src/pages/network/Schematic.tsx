@@ -25,7 +25,7 @@ import { clsx } from 'clsx';
 import { Box, ChevronDown, ChevronRight, MapPin, Plus, Server, Split } from 'lucide-react';
 import { fiberColorFor, ponLabel, type FiberCustomer, type FiberNetwork, type FiberNode, type FiberNodeType } from '@isp/shared';
 import { useTheme } from '@/lib/theme';
-import { fiberHex, fmtLength, fmtMarks, nodePos, outputPorts, type NetIndex } from '@/lib/fiber';
+import { coreTag, fiberHex, fmtLength, fmtMarks, nodePos, outputPorts, type NetIndex } from '@/lib/fiber';
 import { STATUS_COLORS } from '@/components/MapTiles';
 import { TOUCH_QUERY, useMediaQuery } from '@/lib/useMediaQuery';
 import { DND_TYPE, type Selection } from './types';
@@ -46,7 +46,11 @@ const NEST_GAP = 14;
 /** Handle radius (size-2.5 = 10px): React Flow reports edge endpoints at the handle's outer edge. */
 const HANDLE_R = 5;
 const NEST_ADD_H = 30;
-export const NESTED_W = NODE_W - NEST_INSET * 2;
+/** TJ boxes are wider: their rows carry a splice tray between the in and out columns. */
+export const BOX_W = 284;
+/** Width of the splice tray drawn in the middle of a TJ box's rows. */
+const TRAY_W = 48;
+export const NESTED_W = BOX_W - NEST_INSET * 2;
 
 /** Collapsed height (TJ boxes without their nested splitter area). */
 export function nodeHeight(n: FiberNode): number {
@@ -167,34 +171,15 @@ function PortRows({ node, ix }: NodeData) {
         const cust = ix.custByPort.get(`${node.id}:${port}`);
         const target = link ? ix.nodes.get(link.toNodeId) : undefined;
         const color = node.type === 'SPLITTER' ? fiberHex(fiberColorFor(port)) : null;
-        const isBox = node.type === 'TJ_BOX';
-        const inLink = isBox ? ix.inBySlot.get(`${node.id}:${port}`) : undefined;
-        const inFrom = inLink ? ix.nodes.get(inLink.fromNodeId) : undefined;
         const used = !!(link || cust);
         return (
-          <div key={port} className={clsx('relative flex items-center gap-2 text-[11px]', isBox ? 'pr-6 pl-3' : 'px-3')} style={{ height: ROW_H }}>
-            {isBox ? (
-              // Splice position: core in on the left continues out on the right.
-              <Handle
-                type="target"
-                id={`i${port}`}
-                position={Position.Left}
-                className={handleCls}
-                style={{ background: inLink ? (fiberHex(inLink.coreColor) ?? '#0ecb81') : 'var(--muted-strong)' }}
-              />
-            ) : color ? (
+          <div key={port} className="relative flex items-center gap-2 px-3 text-[11px]" style={{ height: ROW_H }}>
+            {color ? (
               <span className="size-2.5 shrink-0 rounded-full ring-1 ring-hairline" style={{ background: color }} />
             ) : (
               <span className={clsx('size-1.5 shrink-0 rounded-full', used ? 'bg-up' : 'bg-surface-3')} />
             )}
-            <span className={clsx('num shrink-0 text-muted-strong', isBox ? 'w-4' : 'w-12')}>
-              {node.type === 'OLT' ? ponLabel(node.ponPrefix, port) : isBox ? port : `P${port}`}
-            </span>
-            {isBox && (
-              <span className={clsx('num min-w-0 flex-1 truncate', inFrom ? 'text-strong' : 'text-muted')} title={inFrom ? `In: ${inFrom.name}${inLink?.cableCode ? ` · ${inLink.cableCode}` : ''}${inLink?.coreNumber != null ? ` core #${inLink.coreNumber}` : ''}` : undefined}>
-                {inFrom ? <>← {inFrom.name}{inLink?.coreNumber != null && <span className="text-muted"> #{inLink.coreNumber}</span>}</> : '—'}
-              </span>
-            )}
+            <span className="num w-12 shrink-0 text-muted-strong">{node.type === 'OLT' ? ponLabel(node.ponPrefix, port) : `P${port}`}</span>
             <span className={clsx('num min-w-0 flex-1 truncate text-right', used ? 'text-strong' : 'text-muted')}>
               {target ? <>→ {target.name}</> : cust ? '' : 'free'}
             </span>
@@ -204,6 +189,140 @@ function PortRows({ node, ix }: NodeData) {
               position={Position.Right}
               className={handleCls}
               style={{ background: color ?? (used ? '#0ecb81' : 'var(--muted-strong)') }}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const STUB = 9;
+const coreStroke = (color: string | null | undefined) => fiberHex(color) ?? 'var(--muted-strong)';
+
+/** Cubic bezier from (x0,y0) to (x1,y1) with horizontal tangents, split at t = 0.5 into two halves. */
+function spliceHalves(x0: number, y0: number, x1: number, y1: number): [string, string, { x: number; y: number }] {
+  const xm = (x0 + x1) / 2;
+  const ym = (y0 + y1) / 2;
+  const q = (x1 - x0) / 4;
+  // Control points of each half (de Casteljau on P0=(x0,y0) P1=(xm,y0) P2=(xm,y1) P3=(x1,y1)).
+  const a = `M${x0},${y0} C${x0 + q},${y0} ${xm - q / 2},${(y0 + ym) / 2} ${xm},${ym}`;
+  const b = `M${xm},${ym} C${xm + q / 2},${(ym + y1) / 2} ${x1 - q},${y1} ${x1},${y1}`;
+  return [a, b, { x: xm, y: ym }];
+}
+
+/**
+ * Splice tray of a TJ box: each incoming core (left, its own color) is drawn joined to the outgoing
+ * core it is spliced to (right, that core's color), with a dot at the fusion point.
+ */
+function SpliceTray({ node, ix, count }: { node: FiberNode; ix: NetIndex; count: number }) {
+  const y = (p: number) => (p - 0.5) * ROW_H;
+  const joins: { inPos: number; out: number; inColor: string; outColor: string; title: string }[] = [];
+  const looseIn: { pos: number; color: string }[] = [];
+  const looseOut: { pos: number; color: string }[] = [];
+  for (let p = 1; p <= count; p++) {
+    const inL = ix.inBySlot.get(`${node.id}:${p}`);
+    const joined = ix.spliceOf.get(`${node.id}:${p}`);
+    const outL = ix.outByPort.get(`${node.id}:${p}`);
+    if (joined?.fromPort != null) {
+      joins.push({
+        inPos: p,
+        out: joined.fromPort,
+        inColor: inL ? coreStroke(inL.coreColor) : 'var(--surface-3)',
+        outColor: coreStroke(joined.coreColor),
+        title: `In ${p}${inL ? ` (${[coreTag(inL), inL.coreColor].filter(Boolean).join(' ')})` : ''} spliced to Out ${joined.fromPort} (${[coreTag(joined), joined.coreColor].filter(Boolean).join(' ')})`,
+      });
+    } else if (inL) looseIn.push({ pos: p, color: coreStroke(inL.coreColor) });
+    if (outL && outL.spliceIn == null) looseOut.push({ pos: p, color: coreStroke(outL.coreColor) });
+  }
+  const h = count * ROW_H;
+  return (
+    <svg
+      width={TRAY_W}
+      height={h}
+      viewBox={`0 0 ${TRAY_W} ${h}`}
+      className="pointer-events-none absolute left-1/2 -translate-x-1/2 overflow-visible"
+      style={{ top: PAD }}
+      aria-hidden
+    >
+      {/* Tray outline */}
+      <rect x={4} y={1} width={TRAY_W - 8} height={h - 2} rx={4} fill="var(--canvas)" fillOpacity={0.5} stroke="var(--hairline)" />
+      {joins.map((j) => {
+        const [a, b, m] = spliceHalves(0, y(j.inPos), TRAY_W, y(j.out));
+        return (
+          <g key={j.inPos}>
+            <title>{j.title}</title>
+            <path d={a} fill="none" stroke="var(--surface)" strokeWidth={4.5} strokeLinecap="round" />
+            <path d={b} fill="none" stroke="var(--surface)" strokeWidth={4.5} strokeLinecap="round" />
+            <path d={a} fill="none" stroke={j.inColor} strokeWidth={2.5} strokeLinecap="round" />
+            <path d={b} fill="none" stroke={j.outColor} strokeWidth={2.5} strokeLinecap="round" />
+            <circle cx={m.x} cy={m.y} r={2.75} fill="var(--text-strong)" stroke="var(--surface)" strokeWidth={1.25} />
+          </g>
+        );
+      })}
+      {/* Cores not spliced: a short stub with an open end. */}
+      {looseIn.map((c) => (
+        <g key={`i${c.pos}`}>
+          <path d={`M0,${y(c.pos)} H${STUB}`} stroke={c.color} strokeWidth={2.5} strokeLinecap="round" />
+          <circle cx={STUB + 2} cy={y(c.pos)} r={2} fill="none" stroke={c.color} strokeWidth={1.25} />
+        </g>
+      ))}
+      {looseOut.map((c) => (
+        <g key={`o${c.pos}`}>
+          <path d={`M${TRAY_W - STUB},${y(c.pos)} H${TRAY_W}`} stroke={c.color} strokeWidth={2.5} strokeLinecap="round" />
+          <circle cx={TRAY_W - STUB - 2} cy={y(c.pos)} r={2} fill="none" stroke={c.color} strokeWidth={1.25} />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/** TJ box rows: core in on the left (splice position), splice tray in the middle, core out on the right. */
+function BoxRows({ node, ix }: NodeData) {
+  const count = outputPorts(node);
+  if (!count) return null;
+  const side = `calc(50% - ${TRAY_W / 2 + 4}px)`;
+  return (
+    <div className="relative border-t border-hairline" style={{ paddingTop: PAD, paddingBottom: PAD }}>
+      <SpliceTray node={node} ix={ix} count={count} />
+      {Array.from({ length: count }, (_, i) => {
+        const port = i + 1;
+        const inLink = ix.inBySlot.get(`${node.id}:${port}`);
+        const inFrom = inLink ? ix.nodes.get(inLink.fromNodeId) : undefined;
+        const link = ix.outByPort.get(`${node.id}:${port}`);
+        const target = link ? ix.nodes.get(link.toNodeId) : undefined;
+        return (
+          <div key={port} className="relative text-[11px]" style={{ height: ROW_H }}>
+            <Handle
+              type="target"
+              id={`i${port}`}
+              position={Position.Left}
+              className={handleCls}
+              style={{ background: inLink ? (fiberHex(inLink.coreColor) ?? '#0ecb81') : 'var(--muted-strong)' }}
+            />
+            <div className="absolute inset-y-0 left-3 flex items-center gap-1.5" style={{ width: `calc(${side} - 12px)` }}>
+              <span className="num w-3.5 shrink-0 text-muted-strong">{port}</span>
+              <span
+                className={clsx('num min-w-0 flex-1 truncate', inFrom ? 'text-strong' : 'text-muted')}
+                title={inFrom ? `In ${port} ← ${inFrom.name} ${[coreTag(inLink!), inLink!.coreColor].filter(Boolean).join(' ')}` : undefined}
+              >
+                {inFrom ? <>← {inFrom.name}{inLink?.coreNumber != null && <span className="text-muted"> #{inLink.coreNumber}</span>}</> : '—'}
+              </span>
+            </div>
+            <div className="absolute inset-y-0 right-3 flex items-center justify-end gap-1.5" style={{ width: `calc(${side} - 12px)` }}>
+              <span
+                className={clsx('num min-w-0 truncate text-right', target ? 'text-strong' : 'text-muted')}
+                title={target && link ? `Out ${port} → ${target.name} ${[coreTag(link), link.coreColor].filter(Boolean).join(' ')}` : undefined}
+              >
+                {target ? <>→ {target.name}{link?.coreNumber != null && <span className="text-muted"> #{link.coreNumber}</span>}</> : 'free'}
+              </span>
+            </div>
+            <Handle
+              type="source"
+              id={`p${port}`}
+              position={Position.Right}
+              className={handleCls}
+              style={{ background: link ? (fiberHex(link.coreColor) ?? '#0ecb81') : 'var(--muted-strong)' }}
             />
           </div>
         );
@@ -251,7 +370,7 @@ const BoxNode = memo(function BoxNode({ data, selected }: NodeProps<FiberFlowNod
     fn();
   };
   return (
-    <Shell node={n} ix={data.ix} selected={selected} sub={sub}>
+    <Shell node={n} ix={data.ix} selected={selected} sub={sub} width={BOX_W}>
       {note && (
         <div
           style={{ height: BOX_NOTE_H }}
@@ -261,7 +380,7 @@ const BoxNode = memo(function BoxNode({ data, selected }: NodeProps<FiberFlowNod
           <span className="truncate">{note}</span>
         </div>
       )}
-      <PortRows {...data} />
+      <BoxRows {...data} />
       <div style={{ height: BOX_FOOT_H }} className="relative flex items-center gap-1.5 border-t border-hairline pr-3 pl-1.5 text-[11px] text-muted">
         {/* Collapsed: cables to/from hidden splitters attach here. */}
         <Handle type="target" id="spl-in" position={Position.Left} isConnectable={false} className={handleCls} style={{ ...handleBg, opacity: expanded ? 0 : 1 }} />

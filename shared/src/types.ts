@@ -164,8 +164,10 @@ export interface FiberLink {
   fromNodeId: string;
   fromPort: number | null;
   toNodeId: string;
-  /** TJ box target: splice position (core continues out on the same-numbered port). */
+  /** TJ box target: splice position the core lands on. */
   toPort: number | null;
+  /** TJ box source: splice position whose incoming core this core is joined to (null = not spliced). */
+  spliceIn: number | null;
   cableCode: string | null;
   coreCount: number | null;
   tubeColor: string | null;

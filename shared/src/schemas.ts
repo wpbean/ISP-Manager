@@ -217,8 +217,14 @@ const fiberLinkBase = z.object({
   fromNodeId: z.string().min(1),
   fromPort: optInt(1, 128),
   toNodeId: z.string().min(1),
-  /** TJ box target only: splice position the core lands on (continues out on the same-numbered port). */
+  /** TJ box target only: splice position the core lands on. */
   toPort: optInt(1, 128),
+  /**
+   * TJ box source only: the splice position (incoming core) this outgoing core is joined to —
+   * any position, not just the same number. Null = not spliced (spare core). Omitted on create →
+   * the same-numbered position when it is free.
+   */
+  spliceIn: optInt(1, 128),
   cableCode: optStr(100),
   coreCount: optInt(1, 1000),
   tubeColor: optStr(30),
@@ -234,7 +240,7 @@ const fiberLinkBase = z.object({
 
 export const fiberLinkCreateSchema = fiberLinkBase;
 export type FiberLinkInput = z.input<typeof fiberLinkCreateSchema>;
-// Endpoints are fixed after creation — delete and redraw to re-route.
+// Endpoints are fixed after creation — delete and redraw to re-route. The splice (`spliceIn`) can change.
 export const fiberLinkUpdateSchema = fiberLinkBase.omit({ fromNodeId: true, fromPort: true, toNodeId: true, toPort: true }).partial();
 export type FiberLinkUpdateInput = z.input<typeof fiberLinkUpdateSchema>;
 

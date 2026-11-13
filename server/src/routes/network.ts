@@ -31,6 +31,7 @@ import {
   syncCable,
   validateAssignment,
   validateNewLink,
+  validateSplice,
 } from '../services/network';
 
 /** Fiber network builder: OLTs, TJ boxes, splitters, cable links and customer patching. */
@@ -106,7 +107,7 @@ networkRouter.delete('/nodes/:id', manage, async (req, res) => {
 // ---- Links (cable cores) ----------------------------------------------------
 networkRouter.post('/links', manage, async (req, res) => {
   const data = fiberLinkCreateSchema.parse(req.body);
-  const { fromPort, toPort } = await validateNewLink(data);
+  const { fromPort, toPort, spliceIn } = await validateNewLink(data);
   const cableCode = data.cableCode?.trim() || null;
   // Another core of an existing cable: inherit its shared fields unless given, and keep the cable in sync.
   const siblings = await cableSiblings({ ...data, cableCode });
@@ -118,7 +119,7 @@ networkRouter.post('/links', manage, async (req, res) => {
   const length = data.length ?? base.length ?? markLength(startMark, endMark);
   const path = data.path?.length ? data.path : ((base.path as [number, number][] | null | undefined) ?? null);
   const link = await prisma.fiberLink.create({
-    data: { ...data, cableCode, fromPort, toPort, coreCount, startMark, endMark, length, path: jsonPath(path) },
+    data: { ...data, cableCode, fromPort, toPort, spliceIn, coreCount, startMark, endMark, length, path: jsonPath(path) },
   });
   if (siblings[0]) await syncCable(link, link.id, sharedChanges(sharedOf(siblings[0]), sharedOf(link)));
   await resyncCustomers();
@@ -131,6 +132,12 @@ networkRouter.patch('/links/:id', manage, async (req, res) => {
   const cur = await prisma.fiberLink.findUnique({ where: { id } });
   if (!cur) throw notFound('Cable');
   if (data.cableCode !== undefined) data.cableCode = data.cableCode?.trim() || null;
+  const resplice = data.spliceIn !== undefined && data.spliceIn !== cur.spliceIn;
+  if (resplice) {
+    const from = await prisma.fiberNode.findUnique({ where: { id: cur.fromNodeId } });
+    if (!from) throw notFound('Node');
+    await validateSplice(from, data.spliceIn ?? null, id);
+  } else delete data.spliceIn;
   const cableCode = data.cableCode !== undefined ? data.cableCode : cur.cableCode;
   const siblings = await cableSiblings({ ...cur, cableCode }, id);
   const movedCable = (cableCode ?? '') !== (cur.cableCode?.trim() ?? '');
@@ -157,6 +164,7 @@ networkRouter.patch('/links/:id', manage, async (req, res) => {
     },
   });
   await syncCable(link, id, changed);
+  if (resplice) await resyncCustomers();
   res.json({ data: serializeLink(link) });
 });
 

@@ -52,12 +52,15 @@ import {
 } from '@/lib/queries';
 import {
   cableCores,
+  coreTag,
+  defaultSplice,
   distanceM,
   fiberHex,
   fmtLength,
   fmtMarks,
   freeInSlots,
   freeOutPorts,
+  freeSpliceIns,
   nextFreeCore,
   nextName,
   nodePos,
@@ -65,6 +68,7 @@ import {
   polylineM,
   portName,
   sourceLabel,
+  spliceInLabel,
   type LatLng,
   type NetIndex,
 } from '@/lib/fiber';
@@ -288,7 +292,7 @@ export function NodeInspector({
             </>
           )}
           {node.type === 'TJ_BOX' && (
-            <Field label="Splice positions" className="col-span-2" hint="Core spliced in on position N leaves on Out N" error={formState.errors.cablePorts?.message}>
+            <Field label="Splice positions" className="col-span-2" hint="In / out positions — splice any incoming core to any out core" error={formState.errors.cablePorts?.message}>
               <Input {...register('cablePorts')} readOnly={ro} numeric inputMode="numeric" placeholder="4" />
             </Field>
           )}
@@ -388,7 +392,7 @@ export function NodeInspector({
         <SplitterPorts node={node} ix={ix} canManage={canManage} onSelect={onSelect} />
       )}
 
-      {node.type === 'TJ_BOX' && <BoxPositions node={node} ix={ix} onSelect={onSelect} />}
+      {node.type === 'TJ_BOX' && <BoxPositions node={node} ix={ix} canManage={canManage} onSelect={onSelect} />}
 
       {node.type === 'OLT' && (
         <Section title="Uplink">
@@ -659,62 +663,115 @@ function ConnectCableModal({
   );
 }
 
-/** TJ box splice positions: core in on N (left) continues out on N (right). */
-function BoxPositions({ node, ix, onSelect }: { node: FiberNode; ix: NetIndex; onSelect: (s: Selection | null) => void }) {
+/** Splice tray of a TJ box: which incoming core (In N) is fused to which outgoing core (Out M — any port, any color). */
+function BoxPositions({ node, ix, canManage, onSelect }: { node: FiberNode; ix: NetIndex; canManage: boolean; onSelect: (s: Selection | null) => void }) {
+  const update = useUpdateLink();
+  const [busy, setBusy] = useState(false);
   const count = outputPorts(node);
-  const used = Array.from({ length: count }, (_, i) => i + 1).filter((p) => ix.inBySlot.has(`${node.id}:${p}`)).length;
-  const cell = 'flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-surface-2 disabled:hover:bg-transparent';
+  const outs = [...(ix.out.get(node.id) ?? [])].sort((x, y) => (x.fromPort ?? 0) - (y.fromPort ?? 0));
+  const joined = outs.filter((l) => l.spliceIn != null).length;
+  const loose = outs.filter((l) => l.spliceIn == null);
+  const outLabel = (l: FiberLink) => {
+    const dst = ix.nodes.get(l.toNodeId);
+    return `Out ${l.fromPort ?? '?'} → ${dst?.name ?? '?'} ${coreTag(l)}${l.coreColor ? ` ${l.coreColor}` : ''}`.replace(/\s+/g, ' ').trim();
+  };
+
+  const splice = async (pos: number, outId: string) => {
+    const cur = ix.spliceOf.get(`${node.id}:${pos}`);
+    if ((cur?.id ?? '') === outId) return;
+    setBusy(true);
+    try {
+      // Free the position first (one outgoing core per incoming core), then join the chosen core.
+      if (cur) await update.mutateAsync({ id: cur.id, spliceIn: null });
+      const next = outId ? outs.find((l) => l.id === outId) : undefined;
+      if (next) await update.mutateAsync({ id: next.id, spliceIn: pos });
+      toast.success(next ? `In ${pos} spliced to Out ${next.fromPort ?? '?'}` : `In ${pos} unspliced`);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <Section title={<>Splice positions · <span className="num">{used}/{count}</span> in use</>}>
-      <div className="mb-1 flex px-2 text-[11px] text-muted">
-        <span className="w-6">#</span>
-        <span className="flex-1">Core in</span>
-        <span className="flex-1 pl-2">Out</span>
-      </div>
-      <ul className="space-y-0.5">
+    <Section title={<>Splices · <span className="num">{joined}</span> joined</>}>
+      <ul className="divide-y divide-hairline">
         {Array.from({ length: count }, (_, i) => {
           const pos = i + 1;
           const inL = ix.inBySlot.get(`${node.id}:${pos}`);
-          const outL = ix.outByPort.get(`${node.id}:${pos}`);
           const src = inL ? ix.nodes.get(inL.fromNodeId) : undefined;
-          const dst = outL ? ix.nodes.get(outL.toNodeId) : undefined;
+          const outL = ix.spliceOf.get(`${node.id}:${pos}`);
           return (
-            <li key={pos} className="flex items-center text-[13px]">
-              <span className="num w-6 shrink-0 pl-2 text-muted-strong">{pos}</span>
-              <button type="button" disabled={!inL} onClick={() => inL && onSelect({ kind: 'link', id: inL.id })} className={cell}>
+            <li key={pos} className="py-2 text-[13px]">
+              <button
+                type="button"
+                disabled={!inL}
+                onClick={() => inL && onSelect({ kind: 'link', id: inL.id })}
+                className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-surface-2 disabled:hover:bg-transparent"
+              >
+                <span className="num w-9 shrink-0 text-muted-strong">In {pos}</span>
                 {inL && src ? (
                   <>
                     <ColorDot color={inL.coreColor} />
                     <span className="num truncate text-strong" title={sourceLabel(ix, inL)}>
-                      {src.name}
+                      ← {src.name}
                       {inL.fromPort != null && <span className="text-muted"> · {portName(src, inL.fromPort)}</span>}
                     </span>
-                    <span className="num ml-auto shrink-0 text-xs text-muted">
-                      {[inL.cableCode, inL.coreNumber != null ? `#${inL.coreNumber}` : null].filter(Boolean).join(' ')}
-                    </span>
+                    <span className="num ml-auto shrink-0 text-xs text-muted">{[coreTag(inL), inL.coreColor].filter(Boolean).join(' ')}</span>
                   </>
                 ) : (
-                  <span className="text-muted">—</span>
+                  <span className="text-muted">no core in</span>
                 )}
               </button>
-              <button type="button" disabled={!outL} onClick={() => outL && onSelect({ kind: 'link', id: outL.id })} className={cell}>
-                {outL && dst ? (
-                  <>
-                    <ArrowRight className="size-3.5 shrink-0 text-muted" />
-                    <span className="num truncate text-strong">{dst.name}</span>
-                    <span className="num ml-auto shrink-0 text-xs text-muted">
-                      {[outL.cableCode, outL.coreNumber != null ? `#${outL.coreNumber}` : null].filter(Boolean).join(' ')}
-                    </span>
-                  </>
+              <div className="mt-1 flex items-center gap-2 pl-2">
+                <span className="w-9 shrink-0 text-right text-muted">↳</span>
+                {canManage ? (
+                  <Select
+                    value={outL?.id ?? ''}
+                    disabled={busy || !outs.length}
+                    onChange={(e) => void splice(pos, e.target.value)}
+                    className="num min-w-0 flex-1"
+                    aria-label={`Out core spliced to In ${pos}`}
+                  >
+                    <option value="">{outs.length ? '— not spliced —' : 'No out cores yet'}</option>
+                    {outs.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {outLabel(l)}
+                        {l.spliceIn != null && l.spliceIn !== pos ? ` (now In ${l.spliceIn})` : ''}
+                      </option>
+                    ))}
+                  </Select>
+                ) : outL ? (
+                  <button type="button" onClick={() => onSelect({ kind: 'link', id: outL.id })} className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-surface-2">
+                    <ColorDot color={outL.coreColor} />
+                    <span className="num truncate text-strong">{outLabel(outL)}</span>
+                  </button>
                 ) : (
-                  <span className="text-muted">free</span>
+                  <span className="px-2 py-1 text-muted">not spliced</span>
                 )}
-              </button>
+              </div>
             </li>
           );
         })}
       </ul>
-      <p className="mt-2 text-xs text-muted">Drag a core onto a position’s left dot on the canvas; drag from its right dot to send it onward.</p>
+      {loose.length > 0 && (
+        <div className="mt-3">
+          <p className="mb-1 px-2 text-[11px] text-muted">Out cores not spliced to anything</p>
+          <ul className="space-y-0.5">
+            {loose.map((l) => (
+              <li key={l.id}>
+                <RowButton onClick={() => onSelect({ kind: 'link', id: l.id })}>
+                  <ColorDot color={l.coreColor} />
+                  <span className="num truncate text-muted-strong">{outLabel(l)}</span>
+                </RowButton>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="mt-2 text-xs text-muted">
+        An incoming core can be fused to any out core — another port, another cable, another color. Each join is drawn inside the box on the schematic.
+      </p>
     </Section>
   );
 }
@@ -1030,8 +1087,15 @@ export function LinkInspector({
       <Section title="Path">
         <div className="flex items-stretch gap-2 text-[13px]">
           {[
-            { n: from, port: link.fromPort, label: from && link.fromPort != null ? portName(from, link.fromPort) : null },
-            { n: to, port: link.toPort, label: link.toPort != null ? `In ${link.toPort} → Out ${link.toPort}` : null },
+            {
+              n: from,
+              port: link.fromPort,
+              label:
+                from && link.fromPort != null
+                  ? `${portName(from, link.fromPort)}${from.type === 'TJ_BOX' ? (link.spliceIn != null ? ` ← In ${link.spliceIn}` : ' · not spliced') : ''}`
+                  : null,
+            },
+            { n: to, port: link.toPort, label: link.toPort != null ? `In ${link.toPort}` : null },
           ].map(({ n, label }, i) => (
             <div key={i} className="flex min-w-0 flex-1 items-center gap-2">
               {i === 1 && <ArrowRight className="size-4 shrink-0 text-muted" />}
@@ -1047,6 +1111,31 @@ export function LinkInspector({
             </div>
           ))}
         </div>
+        {from?.type === 'TJ_BOX' && (
+          <Field label={`Spliced to in ${from.name}`} className="mt-3" hint="The incoming core this core is fused to inside the box">
+            <Select
+              value={link.spliceIn ?? ''}
+              disabled={!canManage || update.isPending}
+              className="num"
+              onChange={async (e) => {
+                const spliceIn = e.target.value ? Number(e.target.value) : null;
+                try {
+                  await update.mutateAsync({ id: link.id, spliceIn });
+                  toast.success(spliceIn != null ? `Spliced to In ${spliceIn}` : 'Splice removed');
+                } catch (err) {
+                  toast.error(errorMessage(err));
+                }
+              }}
+            >
+              <option value="">— not spliced —</option>
+              {freeSpliceIns(ix, from, link.spliceIn).map((p) => (
+                <option key={p} value={p}>
+                  {spliceInLabel(ix, from, p)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
         {canManage && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button size="sm" variant="secondary" onClick={() => onEditRoute(link)} disabled={gps == null} title={gps == null ? 'Both ends need GPS' : undefined}>
@@ -1227,7 +1316,7 @@ export function InsertBoxModal({
         .filter((x) => x.type === 'TJ_BOX' && x.id !== link.fromNodeId && x.id !== link.toNodeId)
         .map((x) => ({
           node: x,
-          free: freeInSlots(ix, x).filter((p) => !ix.outByPort.has(`${x.id}:${p}`)).length,
+          free: freeInSlots(ix, x).filter((p) => !ix.outByPort.has(`${x.id}:${p}`) && !ix.spliceOf.has(`${x.id}:${p}`)).length,
         }))
         .sort((p, q) => p.node.name.localeCompare(q.node.name)),
     [ix, link],
@@ -1480,6 +1569,7 @@ export function NewLinkModal({ draft, ix, onClose, onCreated }: { draft: LinkDra
   const gps = draft ? routeLength(ix, draft.fromNodeId, draft.toNodeId, null) : null;
   const [fromPort, setFromPort] = useState<number | null>(null);
   const [toPort, setToPort] = useState<number | null>(null);
+  const [splice, setSplice] = useState<number | null>(null);
   const [cable, setCable] = useState(NEW_CABLE);
 
   // Existing multi-core cables already running between these two devices.
@@ -1513,7 +1603,8 @@ export function NewLinkModal({ draft, ix, onClose, onCreated }: { draft: LinkDra
     // New cable. Splitter output fiber takes the port's standard color; reuse a sibling core's cable ID.
     const sibling = (ix.out.get(from.id) ?? []).find((l) => l.cableCode);
     // Leaving a TJ box: the core usually continues in the cable it arrived on.
-    const feed = from.type === 'TJ_BOX' && draft.fromPort != null ? ix.inBySlot.get(`${from.id}:${draft.fromPort}`) : undefined;
+    const sp = defaultSplice(ix, from, draft.fromPort);
+    const feed = sp != null ? ix.inBySlot.get(`${from.id}:${sp}`) : undefined;
     const code = from.type === 'SPLITTER' ? null : (feed?.cableCode ?? sibling?.cableCode ?? null);
     form.reset(
       linkValues({
@@ -1532,6 +1623,7 @@ export function NewLinkModal({ draft, ix, onClose, onCreated }: { draft: LinkDra
   useEffect(() => {
     if (!draft) return;
     setFromPort(draft.fromPort);
+    setSplice(from ? defaultSplice(ix, from, draft.fromPort) : null);
     setToPort(to?.type === 'TJ_BOX' ? (draft.toPort ?? (to ? freeInSlots(ix, to)[0] : null) ?? null) : null);
     const prefix = `${draft.fromNodeId}>${draft.toNodeId}>`;
     const keys = [...ix.cables.keys()].filter((k) => k.startsWith(prefix));
@@ -1549,7 +1641,7 @@ export function NewLinkModal({ draft, ix, onClose, onCreated }: { draft: LinkDra
 
   const onSubmit = form.handleSubmit(async (v) => {
     try {
-      const link = await create.mutateAsync({ ...draft!, fromPort, toPort, ...(v as object) });
+      const link = await create.mutateAsync({ ...draft!, fromPort, toPort, ...(from?.type === 'TJ_BOX' ? { spliceIn: splice } : {}), ...(v as object) });
       toast.success(chosen ? `Core #${link.coreNumber ?? '?'} added to cable ${link.cableCode}` : `Cable ${from?.name} → ${to?.name} added`);
       onCreated(link);
     } catch (e) {
@@ -1593,7 +1685,7 @@ export function NewLinkModal({ draft, ix, onClose, onCreated }: { draft: LinkDra
             </Select>
           </Field>
           {to?.type === 'TJ_BOX' ? (
-            <Field label="Into splice position" hint={toPort != null ? <>Continues out on <span className="num">Out {toPort}</span></> : undefined}>
+            <Field label="Into splice position" hint="Splice it onward in the box's Splices list">
               <Select value={toPort ?? ''} onChange={(e) => setToPort(e.target.value ? Number(e.target.value) : null)}>
                 {!toSlots.length && <option value="">No free position</option>}
                 {toSlots.map((p) => (
@@ -1609,6 +1701,18 @@ export function NewLinkModal({ draft, ix, onClose, onCreated }: { draft: LinkDra
             </Field>
           ) : (
             <div />
+          )}
+          {from?.type === 'TJ_BOX' && (
+            <Field label={`Spliced to in ${from.name}`} className="col-span-2" hint="The incoming core this core is fused to — any position, the colors may differ">
+              <Select value={splice ?? ''} onChange={(e) => setSplice(e.target.value ? Number(e.target.value) : null)} className="num">
+                <option value="">— not spliced —</option>
+                {freeSpliceIns(ix, from).map((p) => (
+                  <option key={p} value={p}>
+                    {spliceInLabel(ix, from, p)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
           )}
           {cables.length > 0 && (
             <Field label="Cable" className="col-span-2" hint={chosen ? 'Another core of a cable already laid between these devices' : 'A separate physical cable'}>
@@ -1763,7 +1867,7 @@ export function Overview({ net, ix, onSelect }: { net: FiberNetwork; ix: NetInde
       <Section title="How to build">
         <ol className="list-decimal space-y-1.5 pl-4 text-[13px] text-muted-strong">
           <li>Drag an <b className="text-strong">OLT</b>, <b className="text-strong">TJ box</b> or <b className="text-strong">Splitter</b> from the toolbar onto the canvas (or map to drop it at that GPS spot). Splitters have no GPS of their own — set the TJ box they sit in, or drop them on a TJ box pin.</li>
-          <li>Drag from a port dot on the right of a device onto the next device to lay a cable, then fill in cable ID, core and length. On a TJ box, drop onto a splice position’s left dot — that core continues out on the same-numbered port.</li>
+          <li>Drag from a port dot on the right of a device onto the next device to lay a cable, then fill in cable ID, core and length. On a TJ box, drop onto a splice position’s left dot. Cores going out can be spliced to any incoming core (any port, any color) — pick it in the dialog or the box’s Splices list; the joins are drawn in the box.</li>
           <li>One cable, several cores: drag another port onto the same device and pick the existing cable, or select a cable and use <b className="text-strong">Add core</b>. Length, marks and route stay in sync across its cores.</li>
           <li>Select a splitter and use <b className="text-strong">+ Customer</b> on a free port — the customer’s fiber details fill in automatically.</li>
         </ol>
