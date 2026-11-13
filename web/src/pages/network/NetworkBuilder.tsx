@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { clsx } from 'clsx';
 import { toast } from 'sonner';
-import { ChevronsDownUp, ChevronsUpDown, Crosshair, LayoutGrid, List, Map as MapIcon, Maximize, MousePointerClick, PanelBottomOpen, Undo2, Workflow, X } from 'lucide-react';
+import { ChevronsDownUp, ChevronsUpDown, Crosshair, LayoutGrid, List, Map as MapIcon, Maximize, MousePointerClick, PanelBottomOpen, Redo2, Undo2, Workflow, X } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { FIBER_NODE_LABELS, FIBER_NODE_TYPES, type FiberLink, type FiberNode, type FiberNodeType } from '@isp/shared';
 import { useAuth } from '@/lib/auth';
 import { errorMessage } from '@/lib/api';
+import { redoNetwork, undoNetwork, useNetworkHistory } from '@/lib/networkHistory';
 import { useCreateNode, useNetwork, useSavePositions, useUpdateLink, useUpdateNode } from '@/lib/queries';
 import { distanceM, fmtLength, indexNetwork, nextName, nodePos, polylineM, type LatLng } from '@/lib/fiber';
 import { Button, Card, EmptyState, PageLoader } from '@/components/ui';
@@ -123,6 +125,45 @@ export function NetworkBuilderPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [cancelModes]);
+
+  // ---- Undo / redo -----------------------------------------------------------
+  const qc = useQueryClient();
+  const history = useNetworkHistory();
+  const historyStep = useCallback(
+    async (dir: 'undo' | 'redo') => {
+      try {
+        const label = await (dir === 'undo' ? undoNetwork(qc) : redoNetwork(qc));
+        if (label) toast.success(`${dir === 'undo' ? 'Undone' : 'Redone'}: ${label}`, { id: 'network-history' });
+      } catch (e) {
+        toast.error(`Could not ${dir}: ${errorMessage(e)}`, { id: 'network-history' });
+      }
+    },
+    [qc],
+  );
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  useEffect(() => {
+    if (!canManage) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      const redo = (key === 'z' && e.shiftKey) || (key === 'y' && !e.shiftKey);
+      if (key !== 'z' && !redo) return;
+      // Text fields keep their own undo; open dialogs are left alone.
+      const el = e.target as HTMLElement | null;
+      if (el?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return;
+      e.preventDefault();
+      // While drawing a route, Ctrl+Z removes the last bend point instead.
+      if (routeRef.current) {
+        if (!redo) setRoute((r) => r && { ...r, points: r.points.slice(0, -1) });
+        return;
+      }
+      void historyStep(redo ? 'redo' : 'undo');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canManage, historyStep]);
+  const mod = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
 
   // ---- Creating devices ----------------------------------------------------
   const create = async (type: FiberNodeType, opts: { pos?: { x: number; y: number }; lat?: number; lng?: number; boxId?: string }) => {
@@ -316,6 +357,30 @@ export function NetworkBuilderPage() {
               </button>
             ))}
           </div>
+          {canManage && (
+            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-hairline bg-surface p-1" role="group" aria-label="History">
+              <button
+                type="button"
+                onClick={() => void historyStep('undo')}
+                disabled={!history.canUndo || history.busy}
+                title={history.undoLabel ? `Undo: ${history.undoLabel} (${mod}Z)` : `Undo (${mod}Z)`}
+                aria-label="Undo"
+                className="flex size-9 items-center justify-center rounded-md text-strong hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40 sm:size-8"
+              >
+                <Undo2 className="size-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void historyStep('redo')}
+                disabled={!history.canRedo || history.busy}
+                title={history.redoLabel ? `Redo: ${history.redoLabel} (${mod}⇧Z)` : `Redo (${mod}⇧Z)`}
+                aria-label="Redo"
+                className="flex size-9 items-center justify-center rounded-md text-strong hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40 sm:size-8"
+              >
+                <Redo2 className="size-4" />
+              </button>
+            </div>
+          )}
           {view === 'schematic' && !empty && (
             <>
               {canManage && (

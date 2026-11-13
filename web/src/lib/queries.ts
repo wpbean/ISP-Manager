@@ -24,6 +24,7 @@ import type {
   UserUpdateInput,
 } from '@isp/shared';
 import { api } from './api';
+import { record as recordNetworkChange, tracked } from './networkHistory';
 
 const clean = (o: object) =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== '' && v !== undefined && v !== null));
@@ -185,38 +186,41 @@ export const useNetwork = (enabled = true) =>
     queryFn: async () => (await api.get<{ data: FiberNetwork }>('/network')).data.data,
   });
 
-/** Network changes can rewrite customers' fiber fields (server-side resync). */
-function useInvalidateNetwork() {
+/** Network changes can rewrite customers' fiber fields (server-side resync); every change is recorded for undo. */
+function useTracked() {
   const qc = useQueryClient();
-  return () => {
-    qc.invalidateQueries({ queryKey: ['network'] });
-    qc.invalidateQueries({ queryKey: ['customers'] });
-    qc.invalidateQueries({ queryKey: ['customer'] });
+  const net = () => qc.getQueryData<FiberNetwork>(['network']);
+  return {
+    track: <T,>(label: string, run: () => Promise<T>) => tracked(qc, label, run),
+    nodeName: (id: string) => net()?.nodes.find((n) => n.id === id)?.name ?? 'device',
+    link: (id: string) => net()?.links.find((l) => l.id === id),
+    customerName: (id: string) => net()?.customers.find((c) => c.id === id)?.name ?? 'customer',
   };
 }
 
 export function useCreateNode() {
-  const invalidate = useInvalidateNetwork();
+  const t = useTracked();
   return useMutation({
-    mutationFn: async (body: FiberNodeInput) => (await api.post<{ data: FiberNode }>('/network/nodes', body)).data.data,
-    onSuccess: invalidate,
+    mutationFn: (body: FiberNodeInput) =>
+      t.track(`Add ${body.name}`, async () => (await api.post<{ data: FiberNode }>('/network/nodes', body)).data.data),
   });
 }
 
 export function useUpdateNode() {
-  const invalidate = useInvalidateNetwork();
+  const t = useTracked();
   return useMutation({
-    mutationFn: async ({ id, ...body }: FiberNodeUpdateInput & { id: string }) =>
-      (await api.patch<{ data: FiberNode }>(`/network/nodes/${id}`, body)).data.data,
-    onSuccess: invalidate,
+    mutationFn: ({ id, ...body }: FiberNodeUpdateInput & { id: string }) =>
+      t.track(
+        body.latitude !== undefined && Object.keys(body).length <= 2 ? `Move ${t.nodeName(id)}` : `Edit ${t.nodeName(id)}`,
+        async () => (await api.patch<{ data: FiberNode }>(`/network/nodes/${id}`, body)).data.data,
+      ),
   });
 }
 
 export function useDeleteNode() {
-  const invalidate = useInvalidateNetwork();
+  const t = useTracked();
   return useMutation({
-    mutationFn: async (id: string) => api.delete(`/network/nodes/${id}`),
-    onSuccess: invalidate,
+    mutationFn: (id: string) => t.track(`Delete ${t.nodeName(id)}`, () => api.delete(`/network/nodes/${id}`)),
   });
 }
 
@@ -227,6 +231,7 @@ export function useSavePositions() {
     mutationFn: async (positions: { id: string; x: number; y: number }[]) =>
       api.patch('/network/positions', { positions }),
     onMutate: (positions) => {
+      const before = qc.getQueryData<FiberNetwork>(['network']);
       const byId = new Map(positions.map((p) => [p.id, p]));
       qc.setQueryData<FiberNetwork>(['network'], (old) =>
         old && {
@@ -237,56 +242,68 @@ export function useSavePositions() {
           }),
         },
       );
+      return { before, after: qc.getQueryData<FiberNetwork>(['network']) };
     },
+    onSuccess: (_r, positions, ctx) => {
+      if (!ctx?.before || !ctx.after) return;
+      const name = positions.length === 1 ? ctx.before.nodes.find((n) => n.id === positions[0]!.id)?.name : undefined;
+      recordNetworkChange(name ? `Move ${name}` : `Move ${positions.length} devices`, ctx.before, ctx.after);
+    },
+    onError: (_e, _p, ctx) => ctx?.before && qc.setQueryData(['network'], ctx.before),
   });
 }
 
 export function useCreateLink() {
-  const invalidate = useInvalidateNetwork();
+  const t = useTracked();
   return useMutation({
-    mutationFn: async (body: FiberLinkInput) => (await api.post<{ data: FiberLink }>('/network/links', body)).data.data,
-    onSuccess: invalidate,
+    mutationFn: (body: FiberLinkInput) =>
+      t.track(`Add cable${body.cableCode ? ` ${body.cableCode}` : ''}`, async () => (await api.post<{ data: FiberLink }>('/network/links', body)).data.data),
   });
 }
 
 export function useUpdateLink() {
-  const invalidate = useInvalidateNetwork();
+  const t = useTracked();
   return useMutation({
-    mutationFn: async ({ id, ...body }: FiberLinkUpdateInput & { id: string }) =>
-      (await api.patch<{ data: FiberLink }>(`/network/links/${id}`, body)).data.data,
-    onSuccess: invalidate,
+    mutationFn: ({ id, ...body }: FiberLinkUpdateInput & { id: string }) =>
+      t.track(
+        `${Object.keys(body).every((k) => k === 'path' || k === 'length') && 'path' in body ? 'Route' : 'Edit'} cable${t.link(id)?.cableCode ? ` ${t.link(id)!.cableCode}` : ''}`,
+        async () => (await api.patch<{ data: FiberLink }>(`/network/links/${id}`, body)).data.data,
+      ),
   });
 }
 
 export function useInsertBox() {
-  const invalidate = useInvalidateNetwork();
+  const t = useTracked();
   return useMutation({
-    mutationFn: async ({ linkId, ...body }: FiberInsertBoxInput & { linkId: string }) =>
-      (await api.post<{ data: { box: FiberNode; links: FiberLink[] } }>(`/network/links/${linkId}/insert-box`, body)).data.data,
-    onSuccess: invalidate,
+    mutationFn: ({ linkId, ...body }: FiberInsertBoxInput & { linkId: string }) =>
+      t.track(
+        `Insert ${body.newBox?.name ?? (body.boxId ? t.nodeName(String(body.boxId)) : 'TJ box')}`,
+        async () =>
+          (await api.post<{ data: { box: FiberNode; links: FiberLink[] } }>(`/network/links/${linkId}/insert-box`, body)).data.data,
+      ),
   });
 }
 
 export function useDeleteLink() {
-  const invalidate = useInvalidateNetwork();
+  const t = useTracked();
   return useMutation({
-    mutationFn: async (id: string) => api.delete(`/network/links/${id}`),
-    onSuccess: invalidate,
+    mutationFn: (id: string) =>
+      t.track(`Delete cable${t.link(id)?.cableCode ? ` ${t.link(id)!.cableCode}` : ''}`, () => api.delete(`/network/links/${id}`)),
   });
 }
 
 export function useAssignPort() {
-  const invalidate = useInvalidateNetwork();
+  const t = useTracked();
   return useMutation({
-    mutationFn: async (body: FiberAssignInput) => api.post('/network/assignments', body),
-    onSuccess: invalidate,
+    mutationFn: (body: FiberAssignInput) =>
+      t.track(`Patch customer to ${t.nodeName(body.nodeId)} port ${body.port}`, () => api.post('/network/assignments', body)),
   });
 }
 
 export function useUnassignPort() {
-  const invalidate = useInvalidateNetwork();
+  const t = useTracked();
   return useMutation({
-    mutationFn: async (customerId: string) => api.delete(`/network/assignments/${customerId}`),
-    onSuccess: invalidate,
+    mutationFn: (customerId: string) =>
+      t.track(`Unpatch ${t.customerName(customerId)}`, () => api.delete(`/network/assignments/${customerId}`)),
   });
 }
